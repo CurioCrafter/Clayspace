@@ -1,0 +1,243 @@
+{
+  "upstream": "https://projects.blender.org/blender/blender.git",
+  "commit": "ec6e62d40fa9e9d1bea33ad5d00148c99a4f0832",
+  "source_directory": "blender-5.1.2",
+  "patch": "patches/blender-5.1.2-xr-workbench.patch",
+  "patch_sha256": "106f8b93fd03ba576035d3038482e0a2a985f1b7281049ad7fbd6be37b44677e",
+  "windows_x64_dependencies": {
+    "upstream": "https://projects.blender.org/blender/lib-windows_x64.git",
+    "commit": "17e87e0869383bcf1dd8339502e6008b7c0c8eb0",
+    "branch": "blender-v5.1-release"
+  },
+  "patch_verified_against_base": true,
+  "native_source_files": [
+    {
+      "path": "intern/ghost/GHOST_Xr-api.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "ee30516f420b2d26b2c1982c8ce7e92316614b5734979b0843c8fde6778edb9f"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_ContextD3D.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "8f6de126f1ee675971d4af2e250564eb93dbe18e2e084f4d53d4be6657f0a3ce"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_ContextD3D.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "a870eaefbc579fba2b42383ba55fc130749c864d27d14c09518d025984c7d8e0"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_Xr.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "60c4580153570d3fbbbe257cfa13afd6a8353c535ff2df53a53f46a2dd5865f0"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_XrAction.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "f4896a79e8298fb127851d3d8ad5764a22bd16d7a6ebba7778becfdfcdfb0578"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_XrContext.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "6f8013a65ee76122fc947b6cdb78ca5f268cbb7d31578e4fdcb78f9410b0d194"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_XrEvent.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "0cfc2142fb563d4c26945e1483a0f4e238dc3bfa18c9238fd6badfdaa65504df"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_XrGraphicsBindingD3D.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "1c2e0b96dd765c16519834d78eeb69abf108bbef6b8a1c034adc5e023041c7f8"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_XrSession.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "0866ebc724991f52850eb821779dccda54eda3edd74e3019887d5bfc4b754290"
+    },
+    {
+      "path": "intern/ghost/intern/GHOST_XrSession.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "4bffa2286b584c03b1fad68ebc85852c12221aec6c4c22259213ca9727fe4ba1"
+    },
+    {
+      "path": "source/blender/editors/include/UI_interface_c.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "e4ec61192c3382f8dcae6d94577176536fa4aaf92eabe46a018235afe79de16c"
+    },
+    {
+      "path": "source/blender/editors/interface/CMakeLists.txt",
+      "source_status": "head_diff",
+      "sha256_lf": "96dd7b9ffb3501d5a8c920893f4f454272d358cd0b73d0969cc3a289353db55b"
+    },
+    {
+      "path": "source/blender/editors/interface/interface_handlers.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "99f76abd6066e4ec145325e8f7a41efcbbf9c93d25b8b2f815627fb8a101e1ea"
+    },
+    {
+      "path": "source/blender/editors/interface/regions/interface_region_popup.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "6bd43e2894c64200f1425e84bdb51955c8c3ca6facf1289cfe873eda43e6df6f"
+    },
+    {
+      "path": "source/blender/editors/interface/regions/interface_region_search.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "5811f5a084cea425dd930a69a158520bb48cd125873576690b8dd99c323887f9"
+    },
+    {
+      "path": "source/blender/editors/interface/regions/interface_region_tooltip.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "2955bc77b0b51f254c83bbe139ec73a905c77576ba217870e7369c8a51dbdb37"
+    },
+    {
+      "path": "source/blender/editors/interface/regions/interface_regions.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "1cdd79b7a6f8577c12c34bf209fee62a7eb9817bc01213d50592db4608a5e5a8"
+    },
+    {
+      "path": "source/blender/editors/interface/regions/interface_regions_intern.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "d6fe36cff2f9d712a082edf9a270902e92200fcb80916567f802bc9f568e9b6e"
+    },
+    {
+      "path": "source/blender/editors/mesh/editmesh_undo.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "bafc5728923819fa67a6c5866a5e7d0e5a0b34d331e7f99553137f8866504062"
+    },
+    {
+      "path": "source/blender/makesrna/intern/rna_wm_api.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "88f6e820aab5398b479102834d191e408e0bbf74e8deb21796eb2196f2697fa1"
+    },
+    {
+      "path": "source/blender/makesrna/intern/rna_xr.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "67e25bf71cae5ea1e789a3207bd35a534dc5c0a13067697e7d3b15468201a292"
+    },
+    {
+      "path": "source/blender/python/intern/bpy_rna_callback.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "ad06c8fe8740669c373a34261b28efc93dbb4d7a9c1a20a548da94c935d8f452"
+    },
+    {
+      "path": "source/blender/windowmanager/CMakeLists.txt",
+      "source_status": "head_diff",
+      "sha256_lf": "ba1942f1fe3f3233faf1ff504255f30f42618b0a6d64a0ebcab34deca204018c"
+    },
+    {
+      "path": "source/blender/windowmanager/WM_api.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "c7155225eb6625a1d2fbb1c237a5e44f7f395f735515528b200efc01dc78b4f9"
+    },
+    {
+      "path": "source/blender/windowmanager/WM_types.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "6c7ff36ae1e8111b6303cd4662448229da83198d37a4b4264b06ddce025b3fd8"
+    },
+    {
+      "path": "source/blender/windowmanager/WM_xr_hand.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "8a50dda85a560717908cbdc25219b5630db9ee929668237b559cbfd4e3efb064"
+    },
+    {
+      "path": "source/blender/windowmanager/WM_xr_task.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "1b34d72147203ab427d5886e34bcbf37e0bc95eb723cf601458d87e4720a761d"
+    },
+    {
+      "path": "source/blender/windowmanager/intern/wm_cursors.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "954818f305b61c7abb9408b3dd6292592c877249d25927daa6fd06b7006fabb6"
+    },
+    {
+      "path": "source/blender/windowmanager/intern/wm_draw.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "b36c10ba1a57c764e9b48c33da2e122d81fafaab4a33ac3a1f39c9635062094b"
+    },
+    {
+      "path": "source/blender/windowmanager/intern/wm_event_system.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "cfe52c912e53aa334e37c54d4bb14a63f1bcb17dc0d2e3485263b5e9055b9988"
+    },
+    {
+      "path": "source/blender/windowmanager/intern/wm_window.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "7976c033994cb4b779b6c4f9e154f0eaa225d5fee687731d8f1ae995c8b5f9d9"
+    },
+    {
+      "path": "source/blender/windowmanager/wm_draw.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "fc98df55541a0b9717d81510e9bf9a99d6cc7e35ef9f9f1697fffeb0657c0144"
+    },
+    {
+      "path": "source/blender/windowmanager/wm_event_system.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "0e20933c07c111260f5484ccd59d629684a14e7beef031647ac7066c1d70d610"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "a3a261d217b33ab4a07f8d37dd7a4f467b86097f43fbaebcb7f6079bdf32a2cb"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_camera_overlay.cc",
+      "source_status": "untracked",
+      "sha256_lf": "856c81239b6a3d906c65a50e89a357e0489c412f092452ddaea263a5948909f8"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_camera_stream.hh",
+      "source_status": "untracked",
+      "sha256_lf": "ba359f3bac9e5ab89a4733908ed4cf196be2e51799eee36803252e6b2a6cefea"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_draw.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "4712eca41fbe319dcb31e97454030f69c504882f510aeee43c4d14f464873662"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_editor.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "2e516bfa613c1459d0b105a8bd213ffeb0fa85daba112c72125a0a8a9abee609"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_intern.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "5c5d8a8aa0a3eb775e7394b3978b5312efa81b23a934e7ec035e8a2cb67cea73"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_operators.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "89b87ee28cb0d337f9944a5e1ff83276da547b365c1a167027e8185e50072654"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_session.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "12df4c9413995e3dd79a70022a9eaa48034509db5894d42e4b9bccc2c85f4283"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_task.cc",
+      "source_status": "head_diff",
+      "sha256_lf": "64eb156b93bbea6abae3d4ceddcefb62023689913a984026319ec844a07acb4d"
+    },
+    {
+      "path": "source/blender/windowmanager/xr/intern/wm_xr_task_logic.hh",
+      "source_status": "head_diff",
+      "sha256_lf": "9b4e782b1e1f84f79c912a933820af4a773f73cb144beef5d7119e4f9bcfde89"
+    },
+    {
+      "path": "source/creator/CMakeLists.txt",
+      "source_status": "head_diff",
+      "sha256_lf": "2f6ee00a983d6796fe63e9a3ebb081bde6d8d0f685aad3eafe7d06ed803cfef4"
+    }
+  ],
+  "excluded": [
+    "profiles and personal add-ons",
+    "credentials",
+    "camera images and traces",
+    "runtime logs and local calibration",
+    "vendor sources, builds, libraries and models",
+    "experimental modified Monado runtime (not part of the SteamVR build)"
+  ]
+}

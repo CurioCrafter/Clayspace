@@ -1,0 +1,2 @@
+[tool.ruff]
+extend-exclude = [".tmp*", ".vr_profile", ".xr_profile", "native", "dist"]

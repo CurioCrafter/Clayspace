@@ -1,0 +1,11 @@
+schema_version = "1.0.0"
+id = "vr_blender_workbench"
+version = "0.1.1"
+name = "Blender VR Workbench"
+tagline = "SteamVR spatial authoring with Desktop View fallback"
+maintainer = "TideFront Studio"
+type = "add-on"
+blender_version_min = "4.5.0"
+blender_version_max = "4.6.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["3D View", "Modeling", "Sculpt", "Animation"]

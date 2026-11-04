@@ -1,0 +1,7 @@
+{
+  "file_format_version": "1.0.0",
+  "runtime": {
+    "name": "SteamVR",
+    "library_path": "C:\\Windows\\System32\\kernel32.dll"
+  }
+}
