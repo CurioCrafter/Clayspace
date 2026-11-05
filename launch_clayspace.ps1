@@ -6,13 +6,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $blenderCandidates = @(
+    $env:CLAYSPACE_BLENDER_EXE,
     $env:VRBLENDER_BLENDER_EXE,
     'E:\BlenderBuildsWindows\stable\blender-4.5.11-lts.4db51e9d1e1e\blender.exe',
     'H:\layeringtextures\.tools\blender-4.5.11-windows-x64\blender.exe'
 )
 $blenderExe = $blenderCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
 if (-not $blenderExe) {
-    throw 'Blender 4.5.11 LTS was not found. Set VRBLENDER_BLENDER_EXE to your blender.exe.'
+    throw 'Blender 4.5.11 LTS was not found. Set CLAYSPACE_BLENDER_EXE to your blender.exe.'
 }
 $expectedBlenderSha256 = '0949E462F677C3E341913A838C6E2F54CC1C811CCB6F281AE9B3FF5926A2B255'
 $actualBlenderSha256 = (Get-FileHash -LiteralPath $blenderExe -Algorithm SHA256).Hash
@@ -71,7 +72,7 @@ if ($PreflightOnly) {
     exit 0
 }
 
-Write-Host "Starting isolated VR Blender 4.5.11: $blenderExe"
+Write-Host "Starting isolated Clayspace 4.5.11: $blenderExe"
 Write-Host "Profile: $profileRoot"
 Write-Host "Isolated add-on copy: $addonTarget"
 & $blenderExe --python (Join-Path $projectRoot 'scripts\launch_bootstrap.py')

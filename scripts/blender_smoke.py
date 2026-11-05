@@ -1,4 +1,4 @@
-"""Factory-startup behavioral smoke for Blender VR Workbench."""
+"""Factory-startup behavioral smoke for the Clayspace legacy workbench."""
 
 from __future__ import annotations
 

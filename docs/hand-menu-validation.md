@@ -30,7 +30,7 @@ The desktop remains separately usable. This is not a desktop-popover relabeling.
   `native/build-features/bin/blender-hand-menu-test.exe`, SHA256
   `FA44C0C9C77F31DC2F84D8E7754D86CCDAA248A942CF77A7DA4DD5A5485FC445`.
   It was initially tested separately without replacing the user's running app.
-  After the user saved and closed VR Blender, the exact candidate was installed
+  After the user saved and closed Clayspace, the exact candidate was installed
   as `native/build-features/bin/blender.exe`; source and installed hashes match.
   The previous executable is retained at
   `native/releases/pre-hand-menu-20260924/blender.exe`, SHA256

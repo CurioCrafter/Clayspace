@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 id = "vr_blender_workbench"
 version = "0.1.1"
-name = "Blender VR Workbench"
+name = "Clayspace Legacy Workbench"
 tagline = "SteamVR spatial authoring with Desktop View fallback"
 maintainer = "TideFront Studio"
 type = "add-on"

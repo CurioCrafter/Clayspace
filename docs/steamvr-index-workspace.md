@@ -1,6 +1,6 @@
 # Blender 5.1.2 — SteamVR / Index and Quest PC VR workspace
 
-Double-click **Open SteamVR Blender Index.cmd** in the repository folder from File Explorer.
+Double-click **Open SteamVR Clayspace Index.cmd** in the repository folder from File Explorer.
 This is the source-built 5.1.2 application, not the retained 4.5.11 launcher.
 It opens the separated native editor panels. A private add-on snapshot loads if
 available; a fresh checkout uses the isolated clean profile automatically.
@@ -48,7 +48,7 @@ but requires SteamVR stopped and the Index back in extended-display mode.
 
 ### Meta Quest 3 / Touch-compatible PC VR
 
-Use `Open SteamVR Blender Quest.cmd` after establishing a SteamVR PC VR connection.
+Use `Open SteamVR Clayspace Quest.cmd` after establishing a SteamVR PC VR connection.
 Valve's [Steam Link setup](https://help.steampowered.com/en/faqs/view/0E2C-406B-9135-38A4)
 describes supported headsets and the connection requirements. This project does
 not build a standalone Quest app or enable Meta passthrough.

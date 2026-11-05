@@ -18,8 +18,8 @@ Clone this project first (GitHub access is required while the repository is priv
 then obtain the exact official revisions:
 
 ```powershell
-git clone https://github.com/CurioCrafter/VRBlender.git
-Set-Location VRBlender
+git clone https://github.com/CurioCrafter/Clayspace.git
+Set-Location Clayspace
 git lfs install
 git clone https://projects.blender.org/blender/blender.git native/blender-5.1.2
 git -C native/blender-5.1.2 checkout --detach ec6e62d40fa9e9d1bea33ad5d00148c99a4f0832
