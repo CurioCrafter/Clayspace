@@ -30,7 +30,7 @@ def _require_vrblender_build():
     state = getattr(bpy.types, "XrSessionState", None)
     if state is None or "hand_menu_pose" not in state.bl_rna.functions:
         raise RuntimeError(
-            f"XR Workbench needs the Clayspace build of Blender; this Blender {bpy.app.version_string} "
+            f"Clayspace needs its patched Blender build; this Blender {bpy.app.version_string} "
             "is missing its native XR hand menu and editor surfaces. Download a Clayspace build from "
             "https://github.com/CurioCrafter/Clayspace/releases or build it from source (see README)."
         )
