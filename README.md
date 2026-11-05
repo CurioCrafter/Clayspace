@@ -53,10 +53,59 @@ Windows may warn that the launcher comes from an unknown publisher; the files ar
 code-signed. The launcher is a short PowerShell script in the `launcher` folder, and
 you are welcome to read it first. Logs go to `profile\logs`.
 
-Already built Blender yourself? `Clayspace-0.20.0-addon.zip` is the add-on alone
+Already built Blender yourself? `Clayspace-0.21.0-addon.zip` is the add-on alone
 (Edit > Preferences > Get Extensions > Install from Disk). It needs a Blender built
 with the Clayspace patch, see [Build from source](#build-from-source-windows), and it
 will tell you so if the patch is missing.
+
+## New in 0.21: tools you can feel
+
+The prop in your hand is now the tool. It touches the surface, stops on it instead of
+passing through, slides along it, and presses harder when you push. You feel a texture in
+the controller and hear a short generated sound while you work. Eight new tools use this:
+Knife, Mallet, Chisel, Rake, Sandpaper, Rolling Pin, Drill and Clay Gun.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/media/knife-split.png" alt="A sculpted clay head cut into two separate pieces by the knife"><br>
+<b>Knife.</b> Swipe the blade through a mesh and it cuts along the plane of your stroke.
+With Separate Pieces on, the cut-off piece becomes its own object. One undo step.
+(The pieces were moved apart for the picture.)</td>
+<td width="50%"><img src="docs/media/mallet-dent.png" alt="A wooden mallet denting a block of clay"><br>
+<b>Mallet.</b> Each hit dents the surface, deeper the harder you swing. A whole hold is
+one undo step.</td>
+</tr>
+<tr>
+<td><img src="docs/media/chisel-groove.png" alt="A chisel carving a groove across a clay surface"><br>
+<b>Chisel.</b> Press and drag to carve a groove, with crumbs flying off the tip.</td>
+<td><img src="docs/media/drill-hole.png" alt="The clean hole the drill bored through a clay slab"><br>
+<b>Drill.</b> Hold the tip against the surface and the bit bores in. The hole is a normal
+Boolean modifier, so it stays editable until you apply it.</td>
+</tr>
+<tr>
+<td><img src="docs/media/rolling-pin.png" alt="A rolling pin flattening the lumps on a slab of clay"><br>
+<b>Rolling Pin.</b> Press and roll sideways to flatten and spread clay.</td>
+<td><img src="docs/media/clay-gun-coil.png" alt="A coil of clay the clay gun laid on a slab"><br>
+<b>Clay Gun.</b> Squeeze to lay a coil that sticks to the surface, or draw in the air. It
+becomes an ordinary curve you can edit.</td>
+</tr>
+</table>
+
+Also new in 0.21:
+
+- **Contact mode:** a tool tip within 3 cm of a mesh works at the tip; farther away it
+  works along the ray as in 0.20. Touch Tools (Settings > Feel, or Sculpt > Workshop)
+  turns contact mode off.
+- **Pressure:** in contact mode, pushing the tip into the surface sets the pressure; the
+  trigger only engages the tool.
+- **Feel and sound:** controller haptics that match the material (soft clay, hard wood,
+  cutting edge), plus short generated sounds with a volume and mute setting. No audio
+  files are used.
+- **Glow rings, crumbs and a commit flash:** a ring shows where the tip touches, crumbs
+  fly off when you cut or carve, and a brief flash marks a committed change.
+- **Rake and Sandpaper:** the Rake combs five tines into the surface; Sandpaper smooths
+  as you rub, and does nothing until you move.
+- Taps and pushes are opt-in: tapping a loose small object can nudge it (off by default).
 
 ## New in 0.20: 3D tools you hold
 
@@ -313,6 +362,11 @@ The other `scripts\xr_*_smoke.py` files run the same way.
 
 ## Version history (short)
 
+- **0.21:** tools that touch: props collide with meshes, rest on the surface and slide along it;
+  pressure from pushing; haptics, generated sounds, glow rings, crumbs and a commit flash; new
+  Knife, Mallet, Chisel, Rake, Sandpaper, Rolling Pin, Drill and Clay Gun. The project is
+  renamed from VRBlender to Clayspace, because Blender's trademark policy asks projects not to
+  use Blender in their name.
 - **0.20:** a 3D prop for every tool, Live Cage (fast base mesh while you edit modifier-heavy
   objects), Subdivision Lab (five Geometry Nodes schemes, dialled by hand), Retopo Loom
   (CurioMesh built in), Snake Hook / Inflate / Crease / Layer / Mask sculpting, Twin Hands,
