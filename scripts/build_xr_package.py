@@ -21,6 +21,11 @@ def build():
         for file in SOURCE.iterdir()
         if file.is_file() and file.suffix in {".py", ".toml"}
     }
+    # 0.20: the vendored CurioMesh package (with its MIT LICENSE) and the Tool Props asset.
+    for folder in (SOURCE / "curiomesh", SOURCE / "assets"):
+        for file in folder.rglob("*"):
+            if file.is_file() and "__pycache__" not in file.parts and file.suffix != ".pyc":
+                files[file.relative_to(SOURCE).as_posix()] = file
     assert "__init__.py" in files and "diagnostics.py" in files
     files.update(
         {"README.md": ROOT / "docs" / "xr-workbench.md", "LICENSE": ROOT / "LICENSE",

@@ -335,7 +335,7 @@ class FaceTransaction:
                 bpy.data.meshes.remove(self.preview)
                 self.preview = None
                 self.mesh = None
-                if "FINISHED" not in bpy.ops.ed.undo_push(message="XR Face " + self.tool.replace("_", " ")):
+                if "FINISHED" not in editing.push_undo(message="XR Face " + self.tool.replace("_", " ")):
                     raise RuntimeError("Blender rejected the undo entry")
             except Exception as exc:
                 self.base.to_mesh(self.original)

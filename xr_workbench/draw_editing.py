@@ -372,7 +372,7 @@ class DrawTransaction:
             self.preview_geometry = face_editing._signature(self.mesh)
             self.preview_slots = tuple((slot.link, editing._safe_pointer(slot.material))
                                        for slot in self.obj.material_slots)
-            if "FINISHED" not in bpy.ops.ed.undo_push(message="XR " + self.tool.replace("_", " ")):
+            if "FINISHED" not in editing.push_undo(message="XR " + self.tool.replace("_", " ")):
                 raise RuntimeError("Blender rejected the undo entry")
         except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
             self._drop_preview()

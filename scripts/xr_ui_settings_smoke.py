@@ -7,7 +7,7 @@ import bpy
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import xr_workbench as addon  # noqa: E402
-from xr_workbench import interaction_log, ui  # noqa: E402
+from xr_workbench import interaction_log, onboarding, ui  # noqa: E402
 
 
 class Layout:
@@ -46,6 +46,7 @@ assert bpy.app.background and not bpy.data.filepath
 assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0)
 addon.register()
 settings = bpy.context.window_manager.xrwb_settings
+onboarding.set_pref("menu_open", ",".join(ui.SECTIONS))  # Every section open: the draw checks see every control.
 assert len(ui.COMMAND_PAGES) == 10
 assert dict((key, label) for key, label, _description in ui.COMMAND_PAGES)["CONTROLS"] == "Settings"
 assert abs(settings.scale_drag_distance_m-.2) < 1e-6
@@ -129,5 +130,29 @@ finally:
     addon.runtime.session_running = actual_running
 assert ui.XRWB_PT_workspace.poll(bpy.context) and ui.XRWB_PT_panel.poll(bpy.context)
 assert tuple(space.show_region_ui for space in spaces) == sidebar_before
+
+# Folding Hand Menu: fold state and pins live in vr_prefs.json and survive a restart.
+onboarding.set_pref("menu_open", "")
+assert ui.open_sections() == list(ui.DEFAULT_OPEN) and "SCULPT.tools" in ui.DEFAULT_OPEN
+assert bpy.ops.xrwb.menu_section(key="SCULPT.brush", action="TOGGLE") == {"FINISHED"}
+assert bpy.ops.xrwb.menu_section(key="SCULPT.tools", action="TOGGLE") == {"FINISHED"}
+for key in ("SCULPT.brush", "EDIT.snap", "SCULPT.retopo"):
+    assert bpy.ops.xrwb.menu_section(key=key, action="PIN") == {"FINISHED"}
+assert "Brush unpinned" in interaction_log.last_message(), interaction_log.last_message()
+onboarding.reset_cache()  # Re-read vr_prefs.json, like the next launch.
+assert "SCULPT.brush" in ui.open_sections() and "SCULPT.tools" not in ui.open_sections()
+assert ui.pinned_sections() == ["EDIT.snap", "SCULPT.retopo"], ui.pinned_sections()
+settings.command_page = "SCULPT"
+settings.menu_compact = True
+layout = Layout()
+ui.XRWB_PT_command_deck.draw(SimpleNamespace(layout=layout), bpy.context)
+texts = [record[2] if record[0] == "operator" else record[1] for record in layout.records]
+headers = [text for text in texts if text.split(":")[0] in {"Snap", "Retopo", "Tools", "Brush"}]
+assert headers[:2] == ["Snap:  free · move 0 · 0°", "Retopo:  ~5,000 quads · Balanced"], headers  # Pinned first.
+assert texts.count("Retopo:  ~5,000 quads · Balanced") == 1, "A pinned section is not drawn twice"
+assert not any(text.startswith("Point + trigger") for text in texts), "Compact hides help lines"
+assert ("prop", "sculpt_radius_m", "Brush") in layout.records, "The open Brush section draws its controls"
+assert ("prop", "retopo_faces", "Target Faces") not in layout.records, "A folded section draws only its header"
+settings.menu_compact = False
 addon.unregister()
-print("XR_UI_SETTINGS_SMOKE_PASS registration=1 settings=1 guards=1 profile_help=1 feedback=1 native_sidebar_untouched=1 session_policy=stub pixels=0 hardware=0", flush=True)
+print("XR_UI_SETTINGS_SMOKE_PASS registration=1 settings=1 guards=1 profile_help=1 feedback=1 menu_sections=1 native_sidebar_untouched=1 session_policy=stub pixels=0 hardware=0", flush=True)

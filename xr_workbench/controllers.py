@@ -126,6 +126,20 @@ HAPTIC_MIN_GAP = {"tick": 0.08, "detent": 0.03}
 _last_pulse: dict[str, float] = {}
 
 
+def _cage_sync(context):
+    """Live Cage enters at a stroke's start and starts settling at its end (never breaks input)."""
+    try:
+        from . import editing, live_cage
+        live_cage.refresh(context, editing.active_transaction())
+    except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError) as exc:
+        interaction_log.emit("error", f"Live Cage: {exc}", context, level="WARNING")
+
+
+def _push_undo(message):
+    from . import editing
+    return editing.push_undo(message)
+
+
 def pulse(context, user_path: str, kind: str = "click") -> bool:
     """Short native vibration on one controller; silently skipped when unavailable."""
     try:
@@ -774,6 +788,7 @@ def _cancel_active(context, reason: str) -> tuple[bool, str]:
                              hand=gesture.user_path, level="WARNING")
         pulse(context, gesture.user_path, "cancel")
         _active_gesture = None
+        _cage_sync(context)
     return True, reason
 
 
@@ -823,7 +838,7 @@ def _update_panel_grab(context, event, gesture):
 
 def _begin_pointer(context, event, button="LEFTMOUSE") -> tuple[bool, str]:
     global _active_gesture, _pointer_hand
-    joined = _try_join(context, event)
+    joined = _try_join(context, event, trigger=True)
     if joined is not None:
         return joined
     if _event_key(event) in _release_required:
@@ -1029,7 +1044,7 @@ def _begin_scene_tool(context, event):
         if transaction is None:
             # An instant action (a block dipped into the spray): drain this press.
             _release_required.add(_event_key(event))
-            return True, "Material loaded into the spray"
+            return True, "Retopo started" if tool == "retopo_loom" else "Material loaded into the spray"
         _active_gesture = _ActiveGesture(
             "move", event.xr.action, event.xr.user_path, owner, transaction,
             navigation=_navigation_signature(context), last_input_at=monotonic())
@@ -1107,7 +1122,7 @@ def _clear_selection(context, event) -> tuple[bool, str]:
         obj.select_set(False)
     context.view_layer.objects.active = None
     try:
-        if "FINISHED" not in bpy.ops.ed.undo_push(message="XR Clear Selection"):
+        if "FINISHED" not in _push_undo(message="XR Clear Selection"):
             raise RuntimeError("Blender rejected the undo entry")
     except RuntimeError as exc:
         editing._restore_object_selection(context, snapshot)
@@ -1118,7 +1133,7 @@ def _clear_selection(context, event) -> tuple[bool, str]:
     return True, "Selection cleared (pointed at empty space)"
 
 
-def _try_join(context, event):
+def _try_join(context, event, trigger=False):
     """The other hand's trigger or grip joins a held object transform.
 
     Returns None when this press is not a join, so normal routing continues.
@@ -1128,6 +1143,8 @@ def _try_join(context, event):
     if (gesture is None or key is None or gesture.kind != "move" or gesture.second_key is not None
             or key[1] == gesture.user_path or gesture.primary_position is None):
         return None
+    if _is_sculpt(gesture.transaction):
+        return _join_twin(context, event, gesture, key) if trigger else None
     editing, interaction = _editing_contract()
     if (editing is None or not isinstance(gesture.transaction, editing.EditTransaction)
             or gesture.transaction.mode != "OBJECT"):
@@ -1159,6 +1176,75 @@ def _try_join(context, event):
     if axis_name:
         return True, f"Stretching along {axis_name}: pull apart or push together"
     return True, "Both hands: pull apart to scale, twist to rotate, move to carry"
+
+
+def _belt_grab(context, event):
+    """Tool Belt: a grip squeezed near a belt slot swaps to that tool. None when not near one."""
+    if not tool_wheel._belt or _active_gesture is not None:
+        return None
+    pose = _pose_from_event(event)
+    picked = tool_wheel.belt_pick(pose[0], _world_units_per_metre(context)) if pose is not None else None
+    if picked is None:
+        return None
+    _release_required.add(_event_key(event))  # Done on press: drain this grip until it is let go.
+    from . import ui
+    with ui._view3d_override(context):
+        result = bpy.ops.xrwb.set_edit_tool(tool=picked[0])
+    return "FINISHED" in result, f"Tool: {picked[1]}"
+
+
+def _is_sculpt(transaction):
+    from . import physical_tools
+    return isinstance(transaction, physical_tools.SculptStroke)
+
+
+def _twin_sample(event, key):
+    _editing, interaction = _editing_contract()
+    pose = _pose_from_event(event)
+    if pose is None:
+        return None, None
+    owner = interaction.CaptureOwner(interaction.InputProvenance.CONTROLLER, key[1], 0)
+    return owner, interaction.InputSample(owner=owner, target_generation=0,
+                                          pose=interaction.Pose(tuple(pose[0]), tuple(pose[1])),
+                                          timestamp_seconds=monotonic())
+
+
+def _join_twin(context, event, gesture, key):
+    """Twin Hands: the other trigger adds a second brush to the held sculpt stroke."""
+    _owner, sample = _twin_sample(event, key)
+    if sample is None:
+        return False, "Second controller pose is unavailable"
+    result = gesture.transaction.update_secondary(context, sample)
+    if result.decision.value != "apply":
+        return False, result.message
+    gesture.second_key = key
+    return True, "Twin Hands: both brushes shape the surface; let go of both to finish"
+
+
+def _twin_second_hand(context, event, gesture) -> set[str]:
+    global _active_gesture
+    owner, sample = _twin_sample(event, gesture.second_key)
+    if sample is None:
+        _cancel_active(context, "Second controller lost tracking; stroke cancelled")
+        return {"CANCELLED"}
+    gesture.last_input_at = monotonic()
+    transaction = gesture.transaction
+    if getattr(event, "value", "") == "RELEASE":
+        result = transaction.release(context, owner)
+        gesture.second_key = None
+        if transaction.finished:  # The first brush was already up: that was the commit.
+            interaction_log.emit("commit", getattr(result, "message", "Stroke committed"), context,
+                                 action=gesture.action, hand=_event_hand(event))
+            pulse(context, _event_hand(event), "commit")
+            _active_gesture = None
+        return {"FINISHED"}
+    transaction.pressure = _trigger_pressure(context, event)
+    result = transaction.update_secondary(context, sample)
+    if result.decision.value == "cancel_required":
+        _cancel_active(context, result.message)
+        return {"CANCELLED"}
+    _polish_feedback(context, gesture, result)
+    return {"RUNNING_MODAL"}
 
 
 STRETCH_ALIGN_DEGREES = 25.0
@@ -1256,6 +1342,9 @@ def _begin_world_grip(context, event) -> tuple[bool, str]:
     joined = _try_join(context, event)
     if joined is not None:
         return joined
+    belt = _belt_grab(context, event)
+    if belt is not None:
+        return belt
     if _active_gesture is not None and _active_gesture.kind == "world":
         return _start_or_join_world(context, event)
     if _active_gesture is not None:
@@ -1421,6 +1510,9 @@ def _begin_move(context, event, grip=False) -> tuple[bool, str]:
     joined = _try_join(context, event)
     if joined is not None:
         return joined
+    belt = _belt_grab(context, event) if grip else None
+    if belt is not None:
+        return belt
     if grip and _active_gesture is not None and _active_gesture.kind == "world":
         return _start_or_join_world(context, event)  # Both grips on the world: turn and resize it.
     if grip and _active_gesture is None and not hand_menu_active(context) and _ray_on_panel(context, event):
@@ -1593,10 +1685,14 @@ def _polish_feedback(context, gesture, result) -> None:
     """Refresh the live readout; tick once per detent crossed (never breaks an edit)."""
     from . import polish
     try:
-        gesture.readout = polish.readout(gesture.transaction, gesture) or str(getattr(result, "message", ""))
+        from . import live_cage
+        gesture.readout = ((polish.readout(gesture.transaction, gesture) or str(getattr(result, "message", "")))
+                           + live_cage.readout_suffix())
         step = polish.detent_index(gesture.transaction)
     except (AttributeError, ReferenceError, RuntimeError, TypeError, ValueError):
         return
+    if getattr(gesture.transaction, "pulse", False) and _feel("detents", True):
+        pulse(context, gesture.user_path, "detent")  # Lab Dial / Grow crossed a detent.
     if step is not None and gesture.detent is not None and step != gesture.detent and _feel("detents", True):
         pulse(context, gesture.user_path, "detent")
     gesture.detent = step
@@ -1671,7 +1767,10 @@ def dispatch_xr_event(context, event) -> set[str]:
         _cancel_active(context, message)
         return {"CANCELLED"}
     if getattr(event, "value", "") == "RELEASE":
-        result = _finish_transaction(context, gesture, "commit")
+        twin = _is_sculpt(gesture.transaction)
+        result = _finish_transaction(context, gesture, "release" if twin else "commit")
+        if twin and not gesture.transaction.finished:
+            return {"FINISHED"}  # The second brush is still down; its release commits the stroke.
         if result is False or getattr(result, "applied", True) is False:
             _cancel_active(context, getattr(result, "message", "Controller edit commit rejected"))
             return {"CANCELLED"}
@@ -1681,7 +1780,7 @@ def dispatch_xr_event(context, event) -> set[str]:
             # The held object ended where it started, but stamped copies still
             # need their own undo step.
             try:
-                bpy.ops.ed.undo_push(message="XR Stamp Copies")
+                _push_undo(message="XR Stamp Copies")
             except RuntimeError:
                 pass
         pulse(context, gesture.user_path, "commit")
@@ -1866,6 +1965,8 @@ def drop_onto_surface(context) -> tuple[bool, str]:
 def _dispatch_second_hand(context, event, gesture) -> set[str]:
     if gesture.kind == "world":
         return _world_second_hand(context, event, gesture)
+    if _is_sculpt(gesture.transaction):
+        return _twin_second_hand(context, event, gesture)
     if gesture.navigation != _navigation_signature(context):
         _cancel_active(context, "Navigation changed during two-hand capture")
         return {"CANCELLED"}
@@ -1974,10 +2075,14 @@ def _hover_paused(ray) -> bool:
 def _adjust_brush(context, direction: int) -> tuple[bool, str]:
     """Right stick with a brush tool and no panel under the ray: resize the brush."""
     settings = context.window_manager.xrwb_settings
-    name = {"sculpt_grab": "sculpt_radius_m", "sculpt_clay": "sculpt_radius_m",
-            "sculpt_smooth": "sculpt_radius_m", "sculpt_flatten": "sculpt_radius_m",
-            "spray_material": "spray_radius_m", "paint_vertex": "spray_radius_m",
-            "draw_curve": "pen_radius_m", "sdf_blob": "sdf_radius_m"}.get(settings.edit_tool)
+    tool = settings.edit_tool
+    if tool == "retopo_loom":
+        from . import retopo
+        settings.retopo_faces = retopo.step_target(settings.retopo_faces, 1 if direction > 0 else -1)
+        return True, f"Retopo {retopo.quads_label(settings.retopo_faces)}"
+    name = ("sculpt_radius_m" if tool.startswith("sculpt_") else
+            {"spray_material": "spray_radius_m", "paint_vertex": "spray_radius_m",
+             "draw_curve": "pen_radius_m", "sdf_blob": "sdf_radius_m"}.get(tool))
     if name is None:
         return False, "Right stick scrolls panels; with a brush tool it resizes the brush"
     prop = settings.bl_rna.properties[name]
@@ -2225,6 +2330,8 @@ class _XRWB_OT_modal_gesture(bpy.types.Operator):
         try:
             with ui._view3d_override(context):
                 outcome = dispatch_xr_event(bpy.context, event)
+                if outcome != {"PASS_THROUGH"}:
+                    _cage_sync(bpy.context)
         except Exception as exc:
             interaction_log.emit("error", f"Controller action failed: {exc}", context,
                                  action=self._action, hand=self._user_path, level="ERROR", error=exc)
@@ -2253,6 +2360,7 @@ class _XRWB_OT_modal_gesture(bpy.types.Operator):
                                      action=key[0], hand=key[1],
                                      tool=getattr(bpy.context.window_manager.xrwb_settings, "edit_tool", ""),
                                      level="INFO" if ok else "WARNING")
+                _cage_sync(bpy.context)
                 captured = _active_gesture
                 ui_press = captured is None or captured.kind in {"pointer", "task_card", "menu_open", "panel_grab"}
                 pulse(bpy.context, key[1], ("click" if ui_press else "begin") if ok else "reject")
@@ -2574,6 +2682,10 @@ class XRWB_OT_controller_button(bpy.types.Operator):
             ok, message = toggle_extrude_direction(context)
         elif held and self.slot == "RIGHT_A":
             ok, message = stamp_copy(context)
+        elif self.slot == "RIGHT_A" and callable(getattr(getattr(_active_gesture, "transaction", None),
+                                                         "reroll", None)):
+            _active_gesture.transaction.reroll()  # Grow: a new random shape, same pull.
+            ok, message = True, "Re-rolled"
         elif held and self.slot == "RIGHT_STICK":
             ok, message = cycle_hold_mode(context)
         elif held and self.slot == "LEFT_STICK":

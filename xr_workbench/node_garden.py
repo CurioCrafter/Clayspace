@@ -583,7 +583,7 @@ def _target_material(context):
 
 
 def _undo_push(message):
-    if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in bpy.ops.ed.undo_push(message=message):
+    if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in editing.push_undo(message=message):
         raise RuntimeError("Blender rejected the undo entry")
 
 

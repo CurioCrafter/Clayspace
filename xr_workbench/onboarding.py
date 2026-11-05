@@ -21,7 +21,9 @@ DEFAULTS = {"guide_done": False, "desktop_at_start": False, "haptic_strength": 0
             "precision": 0.25, "hover_ticks": True, "label_scale": 1.0,
             "toasts": True, "readouts": True, "hover_outline": True, "detents": True,
             "two_hand": "SCALE_ROTATE", "menu_hand": "OFF",
-            "locomotion": "SMOOTH", "fly": False, "grip_empty": "WORLD", "theme": "DEFAULT"}
+            "locomotion": "SMOOTH", "fly": False, "grip_empty": "WORLD", "theme": "DEFAULT",
+            "live_cage": True, "tool_props": True, "tool_belt": False,
+            "menu_open": "", "menu_pinned": "", "menu_compact": False}
 _cache: dict | None = None
 
 
@@ -234,6 +236,14 @@ def guide_steps(profile: str) -> list[tuple[str, list[str], str]]:
           "and push the stick to dial its value. Node Garden > Geometry",
           "Nodes of Selected: relink procedural modifiers, live."],
          "Add Bevel and Subdivision, then swap them in the tower."),
+        ("New in 0.20: sculpt and build",
+         ["Sculpt: Snake Hook, Inflate, Crease, Layer and Mask. Off-hand",
+          "trigger in the air is the Brush Dial: up/down for size, roll",
+          "the wrist for strength. The other trigger adds a second brush.",
+          "Lab, Growth and Retopo sections: Subdivision Lab, Grow (A",
+          "re-rolls the shape) and CurioMesh quads. Click a section title",
+          "to fold it; its pin keeps it at the top of every page."],
+         "Pin the Brush section, then open the Create page."),
     ]
 
 

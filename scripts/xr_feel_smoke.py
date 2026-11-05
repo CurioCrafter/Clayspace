@@ -91,21 +91,21 @@ def check_prefs_and_guide():
     settings.desktop_at_start = False
     for profile in ("INDEX", "QUEST", "AUTO"):
         steps = onboarding.guide_steps(profile)
-        assert len(steps) == 10 and all(len(line) <= 70 for _t, lines, _a in steps for line in lines)
+        assert len(steps) == 11 and all(len(line) <= 70 for _t, lines, _a in steps for line in lines)
         text = "\n".join(onboarding.controls_lines(profile))
         assert ("Quest" in text) == (profile != "INDEX")
     settings.controller_profile = "INDEX"
     assert bpy.ops.xrwb.guide(action="OPEN") == {"FINISHED"} and settings.command_page == "GUIDE"
-    for _ in range(11):
+    for _ in range(12):
         bpy.ops.xrwb.guide(action="NEXT")
-    assert settings.guide_step == 9
+    assert settings.guide_step == 10
     bpy.ops.xrwb.guide(action="BACK")
-    assert settings.guide_step == 8
+    assert settings.guide_step == 9
     assert not onboarding.prefs()["guide_done"]
     assert bpy.ops.xrwb.guide(action="FINISH") == {"FINISHED"} and settings.command_page == "CREATE"
     onboarding.reset_cache()
     assert onboarding.prefs()["guide_done"]
-    print("XR_FEEL_PREFS persisted=1 guide_steps=10 guide_navigation=1 guide_done=1", flush=True)
+    print("XR_FEEL_PREFS persisted=1 guide_steps=11 guide_navigation=1 guide_done=1", flush=True)
 
 
 def check_ray_and_stick():
@@ -114,6 +114,8 @@ def check_ray_and_stick():
     assert len(points) == ray_feedback.SEGMENTS * 2
     assert all(abs((p - Vector((0, 0, 1))).length - 0.05) < 2e-3 for p in points)
     assert all(tool in ray_feedback.TOOL_COLOURS for tool, _l, _d in ui.ALL_TOOLS)
+    from xr_workbench import physical_tools
+    assert physical_tools.TOOLS <= {tool for tool, _l, _d in ui.ALL_TOOLS}, "Every physical tool has a label"
     settings.sculpt_radius_m = 0.04
     assert abs(ray_feedback.brush_radius(settings, "sculpt_clay", 0.25) - 0.01) < 1e-7
     gold = bpy.data.materials.new("Paint Gold")

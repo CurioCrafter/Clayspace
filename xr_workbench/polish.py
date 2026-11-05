@@ -132,6 +132,8 @@ def readout(transaction, gesture=None) -> str:
     """One short line describing the live edit, or "" when there is nothing to say."""
     if transaction is None:
         return ""
+    if callable(getattr(transaction, "readout", None)):
+        return transaction.readout()  # Brush Dial, Lab Dial.
     from . import draw_editing, editing, face_editing, node_garden, physical_tools, uv_tools
     if isinstance(transaction, face_editing.FaceTransaction):
         name = {"extrude": "Extrude", "extrude_free": "Free extrude", "inset": "Inset"}.get(transaction.tool)
@@ -187,6 +189,8 @@ def detent_index(transaction):
     """Which step the live edit is on; a change means one haptic tick. None: no detents."""
     if transaction is None:
         return None
+    if callable(getattr(transaction, "detent", None)):
+        return transaction.detent()  # Brush Dial: 0.5 cm and 10 % steps.
     from . import editing, face_editing, uv_tools
     if isinstance(transaction, face_editing.FaceTransaction):
         if transaction.tool == "face_scale":
@@ -293,3 +297,53 @@ def matching_preset() -> str:
                else prefs[name] == value for name, value in values.items()):
             return key
     return ""
+
+
+# ---- Falloff Ring --------------------------------------------------------
+
+FALLOFF_WEIGHTS = (0.75, 0.5, 0.25)
+FALLOFF_ALPHAS = (1.0, 0.6, 0.35)
+
+
+def falloff_radii(radius):
+    """Radii where the brush falloff (1 - t^2)^2 weighs 0.75, 0.5 and 0.25."""
+    return tuple(radius * math.sqrt(1.0 - math.sqrt(w)) for w in FALLOFF_WEIGHTS)
+
+
+# ---- Folding Hand Menu state (pure; stored as comma-separated keys) ----------
+
+MAX_PINNED = 2
+
+
+def parse_keys(text, known=None):
+    """Ordered, de-duplicated section keys; unknown keys (renamed sections) dropped."""
+    keys = []
+    for key in str(text or "").split(","):
+        key = key.strip()
+        if key and key not in keys and (known is None or key in known):
+            keys.append(key)
+    return keys
+
+
+def join_keys(keys):
+    return ",".join(parse_keys(",".join(keys)))
+
+
+def toggle_key(text, key, known=None):
+    """(new text, now open) after toggling one section."""
+    keys = parse_keys(text, known)
+    if key in keys:
+        keys.remove(key)
+        return join_keys(keys), False
+    return join_keys(keys + [key]), True
+
+
+def pin_key(text, key, known=None):
+    """(new text, pinned now, evicted key or "") after toggling a pin; a third pin drops the oldest."""
+    keys = parse_keys(text, known)
+    if key in keys:
+        keys.remove(key)
+        return join_keys(keys), False, ""
+    keys.append(key)
+    evicted = keys.pop(0) if len(keys) > MAX_PINNED else ""
+    return join_keys(keys), True, evicted

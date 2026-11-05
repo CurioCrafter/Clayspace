@@ -28,6 +28,9 @@ TOOL_COLOURS = {
     "extrude_free": (0.2, 0.9, 1.0), "inset": (0.2, 0.9, 1.0), "uv_island": (0.95, 0.45, 0.85),
     "draw_curve": (0.3, 1.0, 0.45), "paint_vertex": (0.9, 0.25, 0.2), "edit_extrude": (1.0, 0.62, 0.15),
     "place_prefab": (0.3, 1.0, 0.45), "sdf_blob": (1.0, 0.6, 0.2),
+    "sculpt_snake": (1.0, 0.6, 0.2), "sculpt_inflate": (1.0, 0.6, 0.2), "sculpt_crease": (1.0, 0.6, 0.2),
+    "sculpt_layer": (1.0, 0.6, 0.2), "sculpt_mask": (0.55, 0.6, 0.75),
+    "lab_dial": (0.75, 0.4, 1.0), "grow_seed": (0.45, 0.85, 0.3), "retopo_loom": (0.2, 0.9, 1.0),
 }
 DRAW_TIP_M = 0.2  # Draw tools start 20 cm ahead of the controller (draw_editing).
 GHOST_M = 0.05
@@ -49,6 +52,8 @@ HINT_FONT_PX = 48
 _hovered: dict[str, str] = {}
 # Latest aim pose per hand (plain tuples) for menu actions that place things at your hand.
 last_poses: dict[str, tuple] = {}
+# Held tool props: (prop or tool id, world matrix rows, squeeze 0..1, accent or None, hand path).
+_props: list[tuple] = []
 _handle = None
 _was_running = False
 _last_error = ""
@@ -262,6 +267,8 @@ def _preview_shapes(context, settings, tool, units, poses):
     if isinstance(transaction, creative_tools.CurvePenStroke):
         shapes.append((list(transaction.lines), colour, 1.0))
         return shapes
+    if callable(getattr(transaction, "preview_points", None)):
+        return _grow_preview(transaction, TOOL_COLOURS["grow_seed"])
     if isinstance(transaction, uv_tools.UVIslandStroke):
         shapes.append((list(transaction.lines), colour, 1.0))
         return shapes
@@ -477,19 +484,76 @@ def _undo_ring(poses, viewer_rotation, units):
                           lines, polish.ACCENT, 1.0, True)]
 
 
+def _falloff_info(settings, tool):
+    """(strength x pressure, dashed) for the Falloff Ring of sculpt brushes; None for plain rings."""
+    if not tool.startswith("sculpt_"):
+        return None
+    pressure = float(getattr(getattr(controllers._active_gesture, "transaction", None), "pressure", 1.0) or 1.0)
+    return float(settings.sculpt_strength) * pressure, tool == "sculpt_mask"
+
+
+def falloff_rings(end, normal, radius, info):
+    """Three rings at the 75/50/25 % weight radii (dashed for Mask) and a dot that swells as you squeeze."""
+    strength, dashed = info
+    shapes = []
+    for ring_radius, alpha in zip(polish.falloff_radii(radius), polish.FALLOFF_ALPHAS):
+        points = ring(end, normal, ring_radius)
+        if dashed:
+            points = [p for i in range(0, len(points), 4) for p in points[i:i + 2]]
+        shapes.append((points, alpha * 0.95))
+    shapes.append((ring(end, normal, max(radius * 0.12 * strength, 1e-6), 8), 1.0))
+    return shapes
+
+
+def _held_props(context, settings, tool, poses, units):
+    """What each hand holds: the tool prop on the main hand, the lattice glove while Live Cage is on."""
+    from . import onboarding
+    if not onboarding.prefs()["tool_props"]:
+        return []
+    left = bool(onboarding.prefs()["left_handed"])
+    main, off = ((controllers.LEFT_HAND, controllers.RIGHT_HAND) if left
+                 else (controllers.RIGHT_HAND, controllers.LEFT_HAND))
+    gesture = controllers._active_gesture
+    held = []
+    if main in poses:
+        origin, rotation, _direction = poses[main]
+        squeeze = 0.0
+        if gesture is not None and gesture.user_path == main:
+            squeeze = float(getattr(getattr(gesture, "transaction", None), "pressure", 1.0) or 1.0)
+        accent = tuple(settings.paint_colour)[:3] if tool == "paint_vertex" else None
+        held.append((tool, _pose_matrix(origin, rotation, units), squeeze, accent, main))
+    if off in poses and onboarding.prefs()["live_cage"]:
+        origin, rotation, _direction = poses[off]
+        held.append(("live_cage", _pose_matrix(origin, rotation, units), 0.0, None, off))
+    return held
+
+
+def _pose_matrix(origin, rotation, units):
+    # ponytail: props sit on the aim pose (their tips were built to land on the ray origin), not the grip pose.
+    matrix = Matrix.Translation(origin) @ rotation.to_matrix().to_4x4() @ Matrix.Scale(units, 4)
+    return tuple(tuple(row) for row in matrix)
+
+
 def refresh(context) -> None:
     """Recompute the cache; plain values only."""
+    from . import live_cage
     settings = context.window_manager.xrwb_settings
     rings = bool(settings.ray_markers)
+    # Live Cage settles here (2 s or hands 10 cm away); last tick's hand positions are close enough.
+    live_cage.refresh(context, editing.active_transaction(),
+                      {path: pose[0] for path, pose in last_poses.items()} or None)
     _fills.clear()
     _links[:] = _garden_links(context)
     if controllers._active_gesture is None and editing.active_transaction() is None:
         modifier_tower.sync(context)  # A gripped block dropped at a new height reorders the stack.
+    from . import onboarding
     if (not rings and not getattr(settings, "button_hints", False) and not tool_wheel.is_open()
-            and not undo_ring.is_open() and not controllers.hand_menu_active(context)):
+            and not undo_ring.is_open() and not controllers.hand_menu_active(context)
+            and not onboarding.prefs()["tool_props"] and not onboarding.prefs()["tool_belt"]):
         _cache.clear()
         _shapes.clear()
         _hints.clear()
+        _props.clear()
         return
     state = context.window_manager.xr_session_state
     actionmap = controllers._find_actionmap(state)
@@ -527,7 +591,8 @@ def refresh(context) -> None:
         end = Vector(location) if hit else origin + direction * 3.0 * units
         _cache[path] = (tuple(origin + direction * 0.04 * units), tuple(end), bool(hit),
                         tuple(normal) if hit else tuple(-direction),
-                        brush_radius(settings, tool, units), tool_colour(settings, tool, obj))
+                        brush_radius(settings, tool, units), tool_colour(settings, tool, obj),
+                        _falloff_info(settings, tool))
         name = obj.name if obj is not None else ""
         object_mode = context.mode == "OBJECT"
         face = (_hover_face(obj, _face, tool, tool_colour(settings, tool, obj), units)
@@ -541,9 +606,14 @@ def refresh(context) -> None:
         if name != _hovered.get(path, "") and name and capture is None and settings.hover_ticks:
             controllers.pulse(context, path, "tick")  # Feel the ray land on something.
         _hovered[path] = name
+    _hints.clear()
     _shapes[:] = (_preview_shapes(context, settings, tool, units, poses) + hover_lines) if rings else hover_lines
     _shapes.extend(_menu_cursor(context, poses))
-    _hints.clear()
+    _props[:] = _held_props(context, settings, tool, poses, units)
+    if hasattr(state, "viewer_pose_location"):
+        tool_wheel.update_belt(settings, tuple(state.viewer_pose_location), tuple(state.viewer_pose_rotation), units)
+    if rings and tool == "retopo_loom" and controllers._pointer_hand in poses:
+        _hints.extend(_retopo_label(context, settings, poses[controllers._pointer_hand], depsgraph, state, units))
     if undo_ring.is_open() and hasattr(state, "viewer_pose_rotation"):
         ring_shapes, ring_plates = _undo_ring(poses, tuple(state.viewer_pose_rotation), units)
         _shapes.extend(ring_shapes)
@@ -560,13 +630,38 @@ def refresh(context) -> None:
                                 hint_lines(context, settings, path)))
 
 
+def _retopo_label(context, settings, pose, depsgraph, state, units):
+    """Retopo Loom: the pointed mesh's face count and the dial's target."""
+    from . import retopo
+    origin, _rotation, direction = pose
+    hit, location, _normal, _face, obj, _matrix = context.scene.ray_cast(depsgraph, origin, direction,
+                                                                        distance=50.0 * units)
+    obj = obj.original if hit and obj is not None else None
+    if obj is None or obj.type != "MESH" or not hasattr(state, "viewer_pose_rotation"):
+        return []
+    text = f"{obj.name}: {retopo.face_count(obj):,} faces  ->  {retopo.quads_label(settings.retopo_faces)}"
+    return [Plate(plate_matrix(location, tuple(state.viewer_pose_rotation), units, 0.06), [text],
+                  TOOL_COLOURS["retopo_loom"], 1.0, True)]
+
+
+def _grow_preview(transaction, colour):
+    lines = []
+    for points in transaction.preview_points():
+        lines += [tuple(p) for a, b in zip(points, points[1:]) for p in (a, b)]
+    return [(lines, colour, 1.0)] if lines else []
+
+
 def _draw():
     global _last_error
+    from . import live_cage
     data = tuple(_cache.values())
     shapes = tuple(_shapes) + tuple(_links)
     fills = tuple(_fills)
     hints = tuple(_hints)
-    if not data and not shapes and not hints and not fills and not tool_wheel.is_open():
+    props = tuple(_props)
+    fades = live_cage.fade_lines()
+    belt = bool(tool_wheel._belt)
+    if not (data or shapes or hints or fills or props or fades or belt or tool_wheel.is_open()):
         return
     previous = None
     try:
@@ -574,16 +669,24 @@ def _draw():
         import gpu
         from gpu_extras.batch import batch_for_shader
         positions, colours = [], []
-        for _start, end, hit, normal, radius, colour in data:
+        for _start, end, hit, normal, radius, colour, falloff in data:
             # No ray line of our own: Blender's controller rays are exact,
             # and a second, timer-lagged line looked like a double ray.
-            if hit:
+            if hit and falloff is not None:
+                for points, alpha in falloff_rings(end, normal, radius, falloff):
+                    positions += [tuple(p) for p in points]
+                    colours += [(*colour, alpha)] * len(points)
+            elif hit:
                 points = ring(end, normal, radius)
                 positions += [tuple(p) for p in points]
                 colours += [(*colour, 0.95)] * len(points)
                 dot = ring(end, normal, max(radius * 0.12, 1e-6), 8)
                 positions += [tuple(p) for p in dot]
                 colours += [(*colour, 1.0)] * len(dot)
+        for segments, alpha in fades:  # Live Cage wire fading out as the real modifiers return.
+            flat = segments.reshape(-1, 3).tolist()
+            positions += flat
+            colours += [(*polish.MUTED, alpha)] * len(flat)
         for points, colour, alpha in shapes:
             positions += points
             colours += [(*colour, alpha)] * len(points)
@@ -605,6 +708,14 @@ def _draw():
             batch_for_shader(shader, "LINES", {"pos": positions, "color": colours}).draw(shader)
         if hints:
             draw_hints(hints)
+        if props or belt:
+            # Props are solid: depth on (tool_props sets and restores it); the lines above stay depth-off.
+            from . import tool_props
+            current = props[0][0] if props else ""
+            for prop, matrix, squeeze, accent, hand in props:
+                tool_props.draw(None, prop, Matrix(matrix), squeeze=squeeze, theme=accent, hand=hand)
+            if belt:
+                tool_wheel.draw_belt(current)
         tool_wheel.draw()
         _last_error = ""
     except Exception as exc:
@@ -673,6 +784,8 @@ def _timer():
             context = bpy.context
             if not runtime.session_running(context):
                 if _was_running:
+                    from . import live_cage
+                    live_cage.restore_all(context, include_caged=True, timed=False)  # VR ended.
                     stop()
                     return None
                 return 0.25
@@ -706,7 +819,9 @@ def stop() -> None:
     _links.clear()
     _fills.clear()
     _hints.clear()
+    _props.clear()
     _hovered.clear()
+    tool_wheel._belt.clear()
     if bpy.app.timers.is_registered(_timer):
         bpy.app.timers.unregister(_timer)
     if _handle is not None:

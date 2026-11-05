@@ -25,9 +25,15 @@ WHEELS = {
               ("menu", "XRWB_MT_edit_mesh", "Edit V·E·F ›"), ("tool", "cut_difference", "Cut Away"),
               ("menu", "XRWB_MT_modifiers", "Modifiers ›"), MORE),
     "SCULPT": (("tool", "sculpt_clay", "Clay"), ("tool", "sculpt_grab", "Grab"),
-               ("tool", "sculpt_smooth", "Smooth"), ("tool", "sculpt_flatten", "Flatten"),
+               ("tool", "sculpt_snake", "Snake Hook"), ("tool", "sculpt_smooth", "Smooth"),
+               ("tool", "sculpt_flatten", "Flatten"), ("tool", "sculpt_inflate", "Inflate"),
+               ("tool", "sculpt_crease", "Crease"), ("tool", "sculpt_layer", "Layer"),
                ("toggle", "sculpt_invert", "Dig"), ("toggle", "sculpt_mirror_x", "Mirror X"),
                ("menu", "XRWB_MT_sdf", "SDF ›"), MORE),
+    "LAB": (("tool", "sculpt_mask", "Mask"), ("tool", "lab_dial", "Lab Dial"),
+            ("tool", "grow_seed", "Grow"), ("tool", "retopo_loom", "Retopo"),
+            ("menu", "XRWB_MT_lab", "Lab ›"), ("menu", "XRWB_MT_growth", "Growth ›"),
+            ("op", ("xrwb.mask_extract", {}), "Extract"), MORE),
     "SHADE": (("tool", "spray_material", "Spray"), ("tool", "eyedropper", "Eyedropper"),
               ("tool", "uv_island", "UV Island"), ("op", ("xrwb.material_shelf", {}), "Shelf"),
               ("op", ("xrwb.node_garden", {"action": "TOGGLE"}), "Node Garden"),
@@ -53,6 +59,7 @@ WHEELS = {
 WHEEL_SETS = (("AUTO", "Follow Workflow", "Wedges for the current workflow"),
               ("MODEL", "Modeling", "Extrude, inset, bevel, cut"),
               ("SCULPT", "Sculpting", "Clay brushes and symmetry"),
+              ("LAB", "Sculpt Lab", "Mask, Subdivision Lab, Growth and Retopo"),
               ("SHADE", "Shading", "Spray, UVs, materials, nodes"),
               ("ANIMATE", "Animation", "Keys, playback and scrubbing"),
               ("STAGE", "Stage", "Lights, camera, render, pen"))
@@ -81,9 +88,10 @@ def open_wheel(context, hand: str, position, viewer_rotation, units: float) -> s
     radius = float(getattr(settings, "wheel_size_m", 0.11)) * units
     rotation = Quaternion(viewer_rotation).normalized()
     _state.clear()
+    from . import onboarding
     _state.update(hand=hand, centre=tuple(position), rotation=tuple(rotation), radius=radius,
                   items=items, highlight=-1, current=str(settings.edit_tool), units=units,
-                  opened=monotonic())
+                  opened=monotonic(), props=bool(onboarding.prefs()["tool_props"]))
     return f"Tool wheel: {len(items)} choices; move toward one, press again"
 
 
@@ -251,6 +259,14 @@ def draw() -> None:
                 blf.color(font, *colour, fade)
                 blf.position(font, -width / 2.0, -height / 2.0, 0.0)
                 blf.draw(font, label)
+        if _state.get("props"):
+            from . import tool_props
+            for index, (kind, value, _label) in enumerate(items):
+                if kind == "tool":  # A small turning prop just outside each tool's label.
+                    x, y = label_position(index, grow)
+                    lift = 0.16 * radius
+                    tool_props.wheel_icon(value, Matrix.Translation((x, y + lift, 0.004 * _state["units"])),
+                                          radius * 0.22 * fade)
         centre_text = items[highlight][2] if highlight >= 0 else "Close"
         width, height = blf.dimensions(font, centre_text)
         with gpu.matrix.push_pop():
@@ -260,6 +276,67 @@ def draw() -> None:
             blf.color(font, *(polish.TEXT if highlight >= 0 else polish.MUTED), fade)
             blf.position(font, -width / 2.0, -height / 2.0, 0.0)
             blf.draw(font, centre_text)
+
+
+# ---- Tool Belt (off by default) ---------------------------------------------
+# Up to 6 tools of the current wheel float at hip height, a little in front of
+# you; squeeze a grip near one to swap to it. Positions are refreshed on the
+# main thread (ray_feedback.refresh); the draw only reads them.
+
+BELT_SIZE = 6
+BELT_SPACING_M = 0.09
+BELT_DROP_M = 0.6  # Below the eyes.
+BELT_FORWARD_M = 0.3
+BELT_REACH_M = 0.07
+_belt: list = []  # (tool, label, world position tuple, facing quaternion tuple, world units per metre)
+
+
+def belt_tools(settings) -> list:
+    # ponytail: favourites are the first 6 tools of the current wheel set; a per-slot pick list if asked.
+    return [(value, label) for kind, value, label in items_for(settings) if kind == "tool"][:BELT_SIZE]
+
+
+def update_belt(settings, viewer_location, viewer_rotation, units) -> None:
+    """Hip-height slots facing you, turned with your head's yaw only."""
+    from . import onboarding
+    _belt.clear()
+    if not onboarding.prefs()["tool_belt"]:
+        return
+    forward = Quaternion(viewer_rotation) @ Vector((0.0, 0.0, -1.0))
+    forward.z = 0.0
+    if forward.length < 1e-6:
+        return
+    forward.normalize()
+    right = Vector((forward.y, -forward.x, 0.0))
+    # Slot frame: x right, y up, z toward you (the frame wheel_icon expects).
+    yaw = Matrix((right, (0.0, 0.0, 1.0), -forward)).transposed().to_quaternion()
+    tools = belt_tools(settings)
+    centre = (Vector(viewer_location) - Vector((0.0, 0.0, BELT_DROP_M * units))
+              + forward * BELT_FORWARD_M * units)
+    for index, (tool, label) in enumerate(tools):
+        offset = (index - (len(tools) - 1) / 2.0) * BELT_SPACING_M * units
+        _belt.append((tool, label, tuple(centre + right * offset), tuple(yaw), units))
+
+
+def belt_pick(position, units):
+    """The belt tool within reach of a hand position, or None."""
+    best, best_distance = None, BELT_REACH_M * units
+    for tool, label, slot, _yaw, _units in _belt:
+        distance = (Vector(position) - Vector(slot)).length
+        if distance < best_distance:
+            best, best_distance = (tool, label), distance
+    return best
+
+
+def draw_belt(current) -> None:
+    """XR draw callback: one small prop per slot, the current tool lifted a little."""
+    if not _belt:
+        return
+    from . import tool_props
+    for tool, _label, slot, yaw, units in list(_belt):
+        lift = 0.02 * units if tool == current else 0.0
+        matrix = Matrix.Translation(Vector(slot) + Vector((0.0, 0.0, lift))) @ Quaternion(yaw).to_matrix().to_4x4()
+        tool_props.wheel_icon(tool, matrix, 0.06 * units)
 
 
 CLASSES = ()

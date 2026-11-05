@@ -14,7 +14,7 @@ xr_workbench.register()
 bpy.context.preferences.edit.use_global_undo = True
 bpy.context.preferences.edit.undo_steps = 32
 settings = bpy.context.window_manager.xrwb_settings
-assert len(xr_workbench.ui.ALL_TOOLS) == 31
+assert len(xr_workbench.ui.ALL_TOOLS) == 39
 for tool, _label, _description in xr_workbench.ui.ALL_TOOLS:
     settings.edit_tool = tool
     assert settings.edit_tool == tool
@@ -81,4 +81,4 @@ with xr_workbench.ui._view3d_override(bpy.context):
     assert bpy.ops.ed.undo() == {"FINISHED"}
     assert bpy.data.objects["Cube"].modifiers[-1].type == "BOOLEAN"
 xr_workbench.unregister()
-print("XR_NATIVE_TOOLS_PASS own_code=1 purchased_addons=0 tools=31 bevel_geometry=1 undo=1 redo=1 preserves_stack=1 invalid_transform_rejected=1 bevel_after_boolean=1", flush=True)
+print("XR_NATIVE_TOOLS_PASS own_code=1 purchased_addons=0 tools=39 bevel_geometry=1 undo=1 redo=1 preserves_stack=1 invalid_transform_rejected=1 bevel_after_boolean=1", flush=True)

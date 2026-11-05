@@ -3,7 +3,7 @@
 bl_info = {
     "name": "XR Workbench",
     "author": "Andrew Rainsberger",
-    "version": (0, 19, 0),
+    "version": (0, 20, 0),
     "blender": (4, 5, 0),
     "location": "3D Viewport > Sidebar > XR Workbench",
     "description": "Experimental source-native XR editor and gesture workbench",
@@ -17,11 +17,12 @@ from . import (  # noqa: E402
     animation_tools, boolean_tools, component_mode, controllers, edge_editing, editing, hands, image_gestures,
     creative_tools as creative_tools, materials_lab, modifier_tower, node_garden, onboarding, physical_tools, quick_actions, ray_feedback, runtime as runtime, ui,
     navigation, prefabs, sdf_modeling, studio, tool_wheel, undo_ring, uv_tools, viewer_scale,
+    growth, live_cage, retopo, subdiv_lab, tool_props,
 )
 
 _MODULES = (ui, controllers, editing, hands, image_gestures, viewer_scale, physical_tools,
             materials_lab, animation_tools, boolean_tools, onboarding, quick_actions, uv_tools, node_garden, studio,
-            component_mode, prefabs, sdf_modeling, navigation, modifier_tower, undo_ring)
+            component_mode, prefabs, sdf_modeling, navigation, modifier_tower, undo_ring, subdiv_lab, growth)
 
 
 def _require_vrblender_build():
@@ -46,9 +47,14 @@ def register():
     if _xr_start_pre not in bpy.app.handlers.xr_session_start_pre:
         bpy.app.handlers.xr_session_start_pre.append(_xr_start_pre)
     modifier_tower.register_handlers()
+    live_cage.register()
+    retopo.register()
 
 
 def unregister():
+    live_cage.unregister()  # Restores every caged modifier first.
+    retopo.unregister()
+    tool_props.clear()  # GPU batches must go before Blender exits, or it can crash.
     edge_editing.stop_overlay()
     ray_feedback.stop()
     tool_wheel.close()
@@ -71,6 +77,7 @@ def _load_pre(_dummy=None):
     ray_feedback.stop()
     viewer_scale.reset_memory()
     undo_ring.close()  # Another file has another history.
+    tool_props.clear()
     ui.clear_transient_options()
 
 

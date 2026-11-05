@@ -173,7 +173,7 @@ def check_wheel():
     before = settings.sculpt_mirror_x
     tool_wheel.open_wheel(bpy.context, "/user/hand/right", (0.0, 0.0, 1.0), upright, 1.0)
     tool_wheel._state["items"] = tool_wheel.WHEELS["SCULPT"]
-    tool_wheel.follow((-0.06, 0.0, 0.94))  # Wedge 5 of 8: down-left.
+    tool_wheel.follow((-0.08, 0.0, 1.0))  # Wedge 9 of 12: straight left.
     assert tool_wheel.highlighted()[1] == "sculpt_mirror_x"
     ok, _message = tool_wheel.pick(bpy.context)
     assert ok and settings.sculpt_mirror_x != before and not tool_wheel.is_open()

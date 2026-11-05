@@ -234,7 +234,7 @@ class XRWB_OT_uv_action(bpy.types.Operator):
                         obj.data.materials.append(checker)
                     else:
                         obj.active_material = checker
-            if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in bpy.ops.ed.undo_push(
+            if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in editing.push_undo(
                     message=f"XR {UV_ACTIONS[self.action][0]}"):
                 raise RuntimeError("Blender rejected the undo entry")
         except (editing.EditRejected, RuntimeError) as exc:

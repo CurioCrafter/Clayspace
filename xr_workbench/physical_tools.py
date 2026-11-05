@@ -14,15 +14,22 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 
-from . import editing, viewer_scale
+from . import editing, sculpt_math, viewer_scale
 from .interaction import (
     CaptureOwner, CapturePhase, CaptureState, Decision, EditRequest, EditResult,
     InputProvenance, Pose, TransformOptions, TransformTool,
 )
 
-SCULPT_TOOLS = {"sculpt_grab", "sculpt_clay", "sculpt_smooth", "sculpt_flatten"}
+SCULPT_TOOLS = {"sculpt_grab", "sculpt_clay", "sculpt_smooth", "sculpt_flatten", "sculpt_snake",
+                "sculpt_inflate", "sculpt_crease", "sculpt_layer", "sculpt_mask"}
 TOOLS = SCULPT_TOOLS | {"spray_material", "scrub_time", "place_object", "measure", "eyedropper", "uv_island",
-                        "draw_curve", "paint_vertex", "place_prefab", "sdf_blob"}
+                        "draw_curve", "paint_vertex", "place_prefab", "sdf_blob", "lab_dial", "grow_seed",
+                        "retopo_loom"}
+# Off-hand trigger in the air with one of these opens the Brush Dial instead of being refused.
+DIAL_TOOLS = SCULPT_TOOLS | {"spray_material", "retopo_loom"}
+DIAL_REACH_M = 2.0  # Physical: a surface farther than this along the ray counts as "in the air".
+DIAL_DOUBLING_M = 0.10  # Brush size doubles every 10 cm of hand rise.
+DIAL_FACES_STEP_M = 0.02  # Retopo target: one 500-face step per 2 cm.
 RESTING_GAP_M = 0.0005
 # key: (label, icon, physical size in metres (x, y, z))
 PLACE_SHAPES = {
@@ -38,10 +45,7 @@ MIN_SCULPT_VERTICES = 50
 MAX_SCULPT_VERTICES = 2_000_000
 
 
-def _falloff(distance, radius):
-    """Smooth brush falloff: 1 at the centre, 0 at the radius."""
-    t = np.clip(distance / radius, 0.0, 1.0)
-    return (1.0 - t * t) ** 2
+_falloff = sculpt_math.falloff
 
 
 def _matrix(obj):
@@ -176,9 +180,15 @@ class _Stroke:
             self._restore(context)  # Drops anything prepared but never used, e.g. a spray slot.
             self._finish(CapturePhase.COMMITTED)
             return EditResult(Decision.APPLY, "No change")
+        try:
+            self._before_push(context)
+        except (RuntimeError, ValueError, ReferenceError) as exc:
+            self._restore(context)
+            self._finish(CapturePhase.CANCELLED)
+            return EditResult(Decision.REJECTED, f"{self.label} restored: {exc}")
         if self.needs_undo:
             try:
-                if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in bpy.ops.ed.undo_push(
+                if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in editing.push_undo(
                         message=f"XR {self.label}"):
                     raise RuntimeError("Blender rejected the undo entry")
             except RuntimeError as exc:
@@ -191,14 +201,148 @@ class _Stroke:
     def commit_message(self):
         return f"{self.label} committed as one undo step"
 
+    def _before_push(self, context):
+        """Hook: release-time work (flush writes, add detail) that belongs in the same undo step."""
+
+
+def get_positions(mesh, out):
+    """Vertex coordinates into a flat float32 array. The position attribute is 10-20x faster than
+    mesh.vertices.foreach_get on dense meshes (90 ms vs 0.2 ms to write 164k vertices on 5.1)."""
+    mesh.attributes["position"].data.foreach_get("vector", out)
+
+
+def set_positions(mesh, values):
+    mesh.attributes["position"].data.foreach_set("vector", values)
+
+
+MASK_NAME = ".sculpt_mask"  # Blender's real sculpt mask: float POINT attribute (4.1+), verified on 4.5.15 and 5.1.2.
+DETAIL_CAP = 20_000
+DENSE_RAY_VERTICES = 50_000
+DETAIL_AUTO_TOOLS = {"sculpt_snake", "sculpt_inflate"}
+LABELS = {"sculpt_grab": "Sculpt Grab", "sculpt_clay": "Sculpt Clay", "sculpt_smooth": "Sculpt Smooth",
+          "sculpt_flatten": "Sculpt Flatten", "sculpt_snake": "Sculpt Snake Hook",
+          "sculpt_inflate": "Sculpt Inflate", "sculpt_crease": "Sculpt Crease",
+          "sculpt_layer": "Sculpt Layer", "sculpt_mask": "Sculpt Mask"}
+
+
+def _opt(settings, name, default):
+    return getattr(settings, name, default)
+
+
+def read_mask(mesh):
+    """The sculpt mask as float32 (one per vertex), or None when the mesh has none."""
+    attr = mesh.attributes.get(MASK_NAME)
+    if attr is None or attr.domain != "POINT" or attr.data_type != "FLOAT":
+        return None
+    values = np.empty(len(mesh.vertices), dtype=np.float32)
+    attr.data.foreach_get("value", values)
+    return values
+
+
+def write_mask(mesh, values):
+    attr = mesh.attributes.get(MASK_NAME)
+    if attr is None:
+        attr = mesh.attributes.new(MASK_NAME, "FLOAT", "POINT")
+    attr.data.foreach_set("value", np.asarray(values, dtype=np.float32))
+    mesh.update()
+
+
+def masked_points(obj, cap=20_000):
+    """World positions of masked vertices (m > 0.5), subsampled to cap, for the overlay."""
+    mask = read_mask(obj.data)
+    if mask is None:
+        return np.empty((0, 3))
+    flat = np.empty(len(mask) * 3, dtype=np.float32)
+    get_positions(obj.data, flat)
+    ids = np.flatnonzero(mask > 0.5)
+    if len(ids) > cap:
+        ids = ids[np.linspace(0, len(ids) - 1, cap).astype(np.int64)]
+    world = _matrix(obj)
+    return flat.reshape(-1, 3)[ids].astype(np.float64) @ world[:3, :3].T + world[:3, 3]
+
+
+def refine_mesh(mesh, touched, target, cap=DETAIL_CAP, backup=False):
+    """Split edges longer than 1.5 * target whose ends were both touched (up to 3 passes).
+
+    Returns (vertices added, capped, backup bmesh or None). The caller owns the backup.
+    Subdivided verts take the average of the mask/UVs of the edge ends from bmesh
+    (ponytail: spec asks for max of the ends for the mask; average is what bmesh
+    interpolates. Upgrade: fix up new verts from their edge ends after the pass).
+    """
+    import bmesh
+
+    limit = 1.5 * target
+    count = len(mesh.vertices)
+    flat = np.empty(count * 3, dtype=np.float32)
+    get_positions(mesh, flat)
+    points = flat.reshape(-1, 3)
+    pairs = np.empty(len(mesh.edges) * 2, dtype=np.int64)
+    mesh.edges.foreach_get("vertices", pairs)
+    pairs = pairs.reshape(-1, 2)
+    lengths = np.linalg.norm(points[pairs[:, 0]] - points[pairs[:, 1]], axis=1)
+    first = np.flatnonzero(touched[pairs[:, 0]] & touched[pairs[:, 1]] & (lengths > limit))
+    if first.size == 0:
+        return 0, False, None
+    bm = bmesh.new()
+    saved = None
+    try:
+        bm.from_mesh(mesh)
+        if backup:
+            saved = bm.copy()
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        for vert, flag in zip(bm.verts, touched):
+            vert.tag = bool(flag)
+        edges = [bm.edges[int(i)] for i in first]
+        added, capped = 0, False
+        for _ in range(3):
+            if added + len(edges) > cap:
+                edges, capped = edges[:max(0, cap - added)], True
+            if not edges:
+                break
+            result = bmesh.ops.subdivide_edges(bm, edges=edges, cuts=1, use_grid_fill=True)
+            fresh = [g for g in result["geom"] if isinstance(g, bmesh.types.BMVert)]
+            for vert in fresh:
+                vert.tag = True
+            added += len(fresh)
+            faces = list({f for vert in fresh for f in vert.link_faces})
+            bmesh.ops.triangulate(bm, faces=faces)
+            faces = list({f for vert in fresh if vert.is_valid for f in vert.link_faces})
+            bmesh.ops.beautify_fill(bm, faces=faces, edges=list({e for f in faces for e in f.edges}))
+            edges = list({e for f in faces if f.is_valid for e in f.edges
+                          if e.verts[0].tag and e.verts[1].tag and e.calc_length() > limit})
+        bm.to_mesh(mesh)
+        mesh.update()
+    except Exception:
+        if saved is not None:
+            saved.free()
+        raise
+    finally:
+        bm.free()
+    return added, capped, saved
+
+
+class _Source:
+    """One brush hand: where its last sample was and its own Grab weights / Snake centre."""
+
+    def __init__(self, owner, position, hit):
+        self.owner = owner
+        self.last = np.array(position, dtype=np.float64)
+        self.anchor = self.last.copy()
+        self.centre = np.array(hit, dtype=np.float64)
+        self.sets = []  # Grab: [ids, weights, rotation 3x3, previous offset]
+
 
 class SculptStroke(_Stroke):
-    """Grab pulls a fixed region; Clay builds up/digs and Smooth relaxes along the path."""
+    """Grab/Snake Hook pull; Clay, Inflate, Layer build; Crease cuts; Smooth/Flatten relax; Mask paints.
+
+    Brushes run in world space over chunked bounding boxes. Mirror X and radial
+    symmetry repeat every brush through `copies`; a second hand can join (twin).
+    """
 
     def __init__(self, context, obj, hit, normal, pose, tool, owner, generation, units, settings):
         super().__init__(context, pose, owner, generation, units)
-        self.label = {"sculpt_grab": "Sculpt Grab", "sculpt_clay": "Sculpt Clay",
-                      "sculpt_smooth": "Sculpt Smooth", "sculpt_flatten": "Sculpt Flatten"}[tool]
+        self.label = LABELS[tool]
         self.tool = tool
         self.obj = obj
         self.mesh = obj.data
@@ -210,7 +354,7 @@ class SculptStroke(_Stroke):
         if self.mesh.shape_keys:
             raise editing.EditRejected("Shape keys are not supported by clay tools yet")
         flat = np.empty(count * 3, dtype=np.float32)
-        self.mesh.vertices.foreach_get("co", flat)
+        get_positions(self.mesh, flat)
         self.original = flat
         self.world = _matrix(obj)
         self.matrix_pointer = tuple(tuple(row) for row in obj.matrix_world)
@@ -221,24 +365,69 @@ class SculptStroke(_Stroke):
         self.radius = max(1.0e-6, float(settings.sculpt_radius_m) * units)
         self.strength = float(settings.sculpt_strength)
         self.sign = -1.0 if settings.sculpt_invert else 1.0
-        self.hit = np.array(hit, dtype=np.float64)
         self.normal = np.array(normal, dtype=np.float64)
         # Trigger pressure (0.15..1) from the controller; 1 without analogue data.
         self.pressure = 1.0
-        # World-space mirror across the object's local X = 0 plane.
-        self.mirror = None
-        if getattr(settings, "sculpt_mirror_x", False):
-            self.mirror = self.world @ np.diag((-1.0, 1.0, 1.0, 1.0)) @ self.inverse
+        mirror = bool(getattr(settings, "sculpt_mirror_x", False))
+        self.radial = int(_opt(settings, "sculpt_radial", 0) or 0)
+        self.copies = sculpt_math.brush_copies(self.world, self.inverse, mirror, self.radial)
+        self.mirror = self.copies[1] if mirror and len(self.copies) > 1 else None
         edges = np.empty(len(self.mesh.edges) * 2, dtype=np.int64)
         self.mesh.edges.foreach_get("vertices", edges)
         self.edges = edges.reshape(-1, 2)
+        self.chunks = sculpt_math.Chunks(self.current)
+        self.touched = np.zeros(count, dtype=bool)
+        self.frame = 0
+        self.bvh = None
+        self.dirty_ids = []
+        self.local = flat.copy()  # What the mesh holds now (local float32); only touched rows are recomputed.
+        self.secondary = {}
+        self.primary_released = False
+        self.backup = None
+        self.refined = 0
+        # Mask: read for every tool (frozen vertices); the Mask tool edits it.
+        self.mask = read_mask(self.mesh)
+        self.mask_created = False
+        self.mask_original = None if self.mask is None else self.mask.copy()
+        if tool == "sculpt_mask" and self.mask is None:
+            self.mask = np.zeros(count, dtype=np.float32)
+            self.mask_created = True
+        self.normals = None
+        if tool in {"sculpt_inflate", "sculpt_layer"}:
+            raw = np.empty(count * 3, dtype=np.float32)
+            self.mesh.vertex_normals.foreach_get("vector", raw)
+            n0 = raw.reshape(-1, 3).astype(np.float64) @ self.inverse[:3, :3]
+            length = np.linalg.norm(n0, axis=1)
+            self.normals = n0 / np.maximum(length, 1.0e-12)[:, None]
+        if tool == "sculpt_layer":
+            self.disp = np.zeros(count)
+            self.height = float(_opt(settings, "sculpt_layer_height_m", 0.005)) * units * self.sign
+        scale = sum(abs(value) for value in obj.matrix_world.to_scale()) / 3.0
+        self.detail_length = float(settings.remesh_detail_m) * units / max(scale, 1.0e-9)
+        choice = _opt(settings, "sculpt_detail", "AUTO")
+        if choice == "AUTO":
+            self.detail = tool in DETAIL_AUTO_TOOLS
+        else:
+            self.detail = bool(choice) and choice != "OFF"
+        self.primary = _Source(owner, pose.position, hit)
         if tool == "sculpt_grab":
-            self.weights = _falloff(np.linalg.norm(self.start_world - self.hit, axis=1), self.radius)
-            self.mirror_weights = (
-                _falloff(np.linalg.norm(self.start_world - self._mirror_point(self.hit), axis=1), self.radius)
-                if self.mirror is not None else None)
-            if not np.any(self.weights > 0.0):
+            self._grab_sets(self.primary, hit)
+            if not any(len(s[0]) for s in self.primary.sets):
                 raise editing.EditRejected("No vertices under the brush; shrink yourself or enlarge the brush")
+
+    # -- helpers ---------------------------------------------------------
+    @property
+    def weights(self):
+        """Grab: primary-brush weight per vertex (identity copy), for readouts and tests."""
+        out = np.zeros(len(self.current))
+        if self.primary.sets:
+            ids, w, _r, _p = self.primary.sets[0]
+            out[ids] = w
+        return out
+
+    @property
+    def twin(self):
+        return bool(self.secondary)
 
     def _mirror_point(self, point):
         return (self.mirror @ np.append(point, 1.0))[:3]
@@ -246,92 +435,289 @@ class SculptStroke(_Stroke):
     def _mirror_vector(self, vector):
         return self.mirror[:3, :3] @ vector
 
+    def _near(self, centre, mask_frozen=True, lateral=None):
+        """Vertices under the brush and their weights. `lateral` (a unit normal) measures
+        distance on the stroke-start surface across that normal, so raising it never moves the brush."""
+        ids = self.chunks.candidates(centre, self.radius)
+        if ids.size == 0:
+            return ids, np.empty(0)
+        if lateral is None:
+            distance = np.linalg.norm(self.current[ids] - centre, axis=1)
+            keep = distance < self.radius
+        else:
+            offset = self.start_world[ids] - centre
+            along = offset @ lateral
+            distance = np.linalg.norm(offset - along[:, None] * lateral, axis=1)
+            keep = (distance < self.radius) & (np.abs(along) < self.radius)
+        ids, distance = ids[keep], distance[keep]
+        weights = sculpt_math.falloff(distance, self.radius)
+        if mask_frozen and self.mask is not None:
+            weights = weights * (1.0 - self.mask[ids])
+        return ids, weights
+
+    def _grab_sets(self, source, hit):
+        for transform in self.copies:
+            centre = (transform @ np.append(hit, 1.0))[:3]
+            ids, weights = self._near(centre)
+            keep = weights > 0.0
+            ids, weights = ids[keep], weights[keep]
+            self.touched[ids] = True
+            source.sets.append([ids, weights, transform[:3, :3], np.zeros((len(ids), 3))])
+
     def _valid(self, context):
         try:
             return (super()._valid(context) and self.obj.name in context.view_layer.objects
-                    and self.obj.data == self.mesh and len(self.mesh.vertices) * 3 == len(self.original)
+                    and self.obj.data == self.mesh
+                    and (self.refined or len(self.mesh.vertices) * 3 == len(self.original))
                     and tuple(tuple(row) for row in self.obj.matrix_world) == self.matrix_pointer)
         except ReferenceError:
             return False
 
+    @property
+    def dirty(self):
+        return bool(self.dirty_ids)
+
     def _write(self):
-        local = (self.current - self.world[:3, 3]) @ self.inverse[:3, :3].T
-        self.mesh.vertices.foreach_set("co", local.astype(np.float32).ravel())
+        if self.dirty_ids:
+            ids = np.concatenate(self.dirty_ids)
+            rows = self.local.reshape(-1, 3)
+            rows[ids] = ((self.current[ids] - self.world[:3, 3]) @ self.inverse[:3, :3].T).astype(np.float32)
+            self.dirty_ids = []
+        set_positions(self.mesh, self.local)
         self.mesh.update()
 
+    def _write_due(self, ids):
+        """Dense meshes and many brush copies write at 45 or 30 Hz (every 2nd / 3rd sample)."""
+        count = len(self.current)
+        every = 3 if count > 1_000_000 else 2 if (count > 500_000 or len(self.copies) > 8) else 1
+        self.frame += 1
+        self.dirty_ids.append(ids)
+        if every == 1 or self.frame % every == 0:
+            self._write()
+
+    @property
+    def rate_note(self):
+        count = len(self.current)
+        if count > 1_000_000:
+            return " (dense mesh, 30 Hz)"
+        return " (dense mesh, 45 Hz)" if count > 500_000 or len(self.copies) > 8 else ""
+
     def _restore(self, context):
-        self.mesh.vertices.foreach_set("co", self.original)
+        if self.backup is not None:
+            self.backup.to_mesh(self.mesh)
+        else:
+            set_positions(self.mesh, self.original)
+        if self.tool == "sculpt_mask" and self.backup is None:
+            if self.mask_created:
+                attr = self.mesh.attributes.get(MASK_NAME)
+                if attr is not None:
+                    self.mesh.attributes.remove(attr)
+            else:
+                write_mask(self.mesh, self.mask_original)
         self.mesh.update()
+
+    def _finish(self, phase):
+        if self.backup is not None:
+            self.backup.free()
+            self.backup = None
+        super()._finish(phase)
+
+    def _before_push(self, context):
+        if self.dirty:
+            self._write()
+        if self.detail and self.tool != "sculpt_mask" and np.any(self.touched):
+            added, capped, self.backup = refine_mesh(self.mesh, self.touched, self.detail_length, backup=True)
+            if added:
+                self.refined = added
+                _log(context, f"Detail added {added:,} vertices" + ("; capped: Remesh for Detail" if capped else ""))
+            elif self.backup is not None:
+                self.backup.free()
+                self.backup = None
 
     def _surface_hit(self, context, pose):
         origin, direction, _rotation = _pose_ray(pose)
-        context.view_layer.update()
         inverse = self.obj.matrix_world.inverted()
-        hit, location, normal, _index = self.obj.ray_cast(
-            inverse @ origin, (inverse.to_3x3() @ direction).normalized(),
-            depsgraph=context.evaluated_depsgraph_get())
+        if len(self.current) > DENSE_RAY_VERTICES:
+            # ponytail: dense meshes ray cast against the surface as it was when the stroke began
+            # (one BVH, microseconds per sample); a live ray cast re-evaluates the whole mesh
+            # (~130 ms at 164k vertices). Small meshes keep the live surface. Upgrade: refit the BVH.
+            if self.bvh is None:
+                from mathutils.bvhtree import BVHTree
+                context.view_layer.update()
+                self.bvh = BVHTree.FromObject(self.obj, context.evaluated_depsgraph_get())
+            location, normal, _index, _distance = self.bvh.ray_cast(
+                inverse @ origin, (inverse.to_3x3() @ direction).normalized())
+            hit = location is not None
+        else:
+            context.view_layer.update()
+            hit, location, normal, _index = self.obj.ray_cast(
+                inverse @ origin, (inverse.to_3x3() @ direction).normalized(),
+                depsgraph=context.evaluated_depsgraph_get())
         if not hit:
             return None
         world = self.obj.matrix_world
         return (np.array(world @ location), np.array((inverse.transposed().to_3x3() @ normal).normalized()))
 
+    # -- input -----------------------------------------------------------
     def _apply(self, context, pose):
-        position = Vector(pose.position)
-        if self.tool == "sculpt_grab":
-            delta = np.array(position - self.anchor)
-            self.current = self.start_world + self.weights[:, None] * delta[None, :]
-            if self.mirror_weights is not None:
-                self.current += self.mirror_weights[:, None] * self._mirror_vector(delta)[None, :]
-            self._write()
-            self.changed = bool(np.any(np.abs(delta) > 1.0e-9))
-            return f"Grab {np.linalg.norm(delta) / self.units * 100:.1f} cm"
-        step = (position - self.last).length
-        if step <= 1.0e-9:
+        return self._run(context, self.primary, pose)
+
+    def update_secondary(self, context, sample):
+        """The other hand's trigger joins the stroke as a second brush (same transaction)."""
+        editing._require_main_thread()
+        owner = sample.owner
+        key = (owner.provenance, owner.identifier)
+        if editing.active_transaction() is not self or self.finished:
+            return EditResult(Decision.REJECTED, f"{self.label} does not own capture")
+        if key == (self.request.owner.provenance, self.request.owner.identifier):
+            return EditResult(Decision.REJECTED, "Input belongs to the first brush")
+        if self.primary_released:
+            return EditResult(Decision.REJECTED, "First brush already released")
+        if not self._valid(context) or not editing.undo_available(context):
+            self.cancel(context)
+            return EditResult(Decision.CANCEL_REQUIRED, f"{self.label} target or undo state changed")
+        if not sample.tracking_active:
+            return EditResult(Decision.PAUSED, "Second brush tracking lost")
+        position = np.array(Vector(sample.pose.position))
+        if not np.all(np.isfinite(position)):
+            return EditResult(Decision.REJECTED, "Controller position is outside Blender's finite range")
+        source = self.secondary.get(key)
+        if source is None:
+            surface = self._surface_hit(context, sample.pose)
+            if surface is None:
+                return EditResult(Decision.REJECTED, "Aim the second brush at the surface")
+            source = _Source(owner, position, surface[0])
+            if self.tool == "sculpt_grab":
+                self._grab_sets(source, surface[0])
+            self.secondary[key] = source
+            return EditResult(Decision.APPLY, "Second brush joined")
+        return EditResult(Decision.APPLY, self._run(context, source, sample.pose))
+
+    def release(self, context, owner):
+        """A trigger was let go: a twin brush stops; the stroke commits when both are released."""
+        key = (owner.provenance, owner.identifier)
+        if key in self.secondary:
+            del self.secondary[key]
+            if self.primary_released:
+                return self.commit(context)
+            return EditResult(Decision.APPLY, "Second brush released")
+        if self.secondary:
+            self.primary_released = True
+            return EditResult(Decision.APPLY, "Waiting for the second brush to release")
+        return self.commit(context, owner)
+
+    def cancel(self, context, owner=None):
+        if owner is not None and (owner.provenance, owner.identifier) in self.secondary:
+            owner = None  # Either hand cancels the whole stroke.
+        return super().cancel(context, owner)
+
+    # -- brushes ---------------------------------------------------------
+    def _grab(self, source, position, primary):
+        anchor = np.array(self.anchor) if primary else source.anchor
+        delta = position - anchor
+        moved = []
+        for entry in source.sets:
+            ids, weights, rotation, previous = entry
+            offset = weights[:, None] * (rotation @ delta)[None, :]
+            self.current[ids] += offset - previous
+            entry[3] = offset
+            moved.append(ids)
+        if moved:
+            ids = np.concatenate(moved)
+            self.chunks.refresh(self.current, ids)
+            self._write_due(ids)
+        if np.any(np.abs(delta) > 1.0e-9):
+            self.changed = True
+        return f"Grab {np.linalg.norm(delta) / self.units * 100:.1f} cm{self.rate_note}"
+
+    def _run(self, context, source, pose):
+        primary = source is self.primary
+        position = np.array(Vector(pose.position))
+        tool = self.tool
+        if tool == "sculpt_grab":
+            return self._grab(source, position, primary)
+        last = np.array(self.last) if primary else source.last
+        delta = position - last
+        if not primary:
+            source.last = position
+        step = float(np.linalg.norm(delta))
+        if step <= 1.0e-9 and tool != "sculpt_layer":
             return "Move the hand to sculpt"
-        surface = self._surface_hit(context, pose)
-        if surface is None:
-            return "Brush is off the surface"
-        centre, normal = surface
-        brushes = [(centre, normal)]
-        if self.mirror is not None:
-            brushes.append((self._mirror_point(centre), self._mirror_vector(normal)))
-        touched = np.zeros(len(self.current), dtype=bool)
-        for centre, normal in brushes:
-            weights = _falloff(np.linalg.norm(self.current - centre, axis=1), self.radius)
-            mask = weights > 0.0
-            if not np.any(mask):
+        normal = self.normal
+        if tool == "sculpt_snake":
+            delta = sculpt_math.clamp_delta(delta, self.radius)
+            step = float(np.linalg.norm(delta))
+            centre = source.centre
+        else:
+            surface = self._surface_hit(context, pose)
+            if surface is None:
+                return "Brush is off the surface"
+            centre, normal = surface
+        force = self.strength * self.pressure
+        moved, pending = [], []
+        everything = slice(None)
+        for transform in self.copies:
+            rot = transform[:3, :3]
+            c = (transform @ np.append(centre, 1.0))[:3]
+            n = rot @ normal
+            ids, w = self._near(c, mask_frozen=(tool != "sculpt_mask"),
+                                lateral=n if tool == "sculpt_layer" else None)
+            keep = w > 0.0
+            ids, w = ids[keep], w[keep]
+            if not ids.size:
                 continue
-            touched |= mask
-            if self.tool == "sculpt_clay":
+            self.touched[ids] = True
+            moved.append(ids)
+            # Every copy reads the positions from before this sample, so mirror and radial
+            # copies stay exactly symmetric even where their brushes overlap.
+            pts = self.current[ids]
+            if tool == "sculpt_clay":
                 # Half the hand travel is added as height at full strength and pressure.
-                amount = step * 0.5 * self.strength * self.pressure * self.sign
-                self.current[mask] += weights[mask, None] * amount * normal[None, :]
-            elif self.tool == "sculpt_flatten":
+                pts += (w * (step * 0.5 * force * self.sign))[:, None] * n
+            elif tool == "sculpt_flatten":
                 # Pull bumps and dents toward the average plane under the brush
                 # (like Blender's Flatten): the peak moves, not just the sides.
-                factor = min(1.0, 2.0 * step / self.radius) * self.strength * self.pressure
-                plane = np.average(self.current[mask], axis=0, weights=weights[mask])
-                height = (self.current[mask] - plane) @ normal
-                self.current[mask] -= (weights[mask] * factor * height)[:, None] * normal[None, :]
-            else:
-                total = np.zeros_like(self.current)
-                counts = np.zeros(len(self.current))
-                a, b = self.edges[:, 0], self.edges[:, 1]
-                np.add.at(total, a, self.current[b])
-                np.add.at(total, b, self.current[a])
-                np.add.at(counts, a, 1.0)
-                np.add.at(counts, b, 1.0)
-                safe = counts > 0
-                average = self.current.copy()
-                average[safe] = total[safe] / counts[safe, None]
-                factor = min(1.0, 2.0 * step / self.radius) * self.strength * self.pressure
-                self.current[mask] += (weights[mask, None] * factor) * (average[mask] - self.current[mask])
-        mask = touched
-        if not np.any(mask):
+                factor = min(1.0, 2.0 * step / self.radius) * force
+                plane = np.average(pts, axis=0, weights=w)
+                pts -= (w * factor * ((pts - plane) @ n))[:, None] * n
+            elif tool == "sculpt_smooth":
+                average = sculpt_math.smooth_average(self.current, ids, self.edges)
+                pts += (w * (min(1.0, 2.0 * step / self.radius) * force))[:, None] * (average - pts)
+            elif tool == "sculpt_snake":
+                sculpt_math.snake(pts, everything, w, c, rot @ delta, force, self.radius)
+            elif tool == "sculpt_inflate":
+                pts += (w * (step * 0.5 * force * self.sign))[:, None] * self.normals[ids]
+            elif tool == "sculpt_crease":
+                sculpt_math.crease(pts, everything, w, c, n, step, force, self.sign, self.radius)
+            elif tool == "sculpt_layer":
+                self.disp[ids] = (np.maximum if self.height >= 0 else np.minimum)(self.disp[ids], w * self.height)
+                continue
+            elif tool == "sculpt_mask":
+                amount = w * (min(1.0, 2.0 * step / self.radius) * 2.0 * force * self.sign)
+                self.mask[ids] = np.clip(self.mask[ids] + amount, 0.0, 1.0)
+                continue
+            pending.append((ids, pts - self.current[ids]))
+        for ids, change in pending:
+            self.current[ids] += change
+        if tool == "sculpt_layer":
+            for ids in moved:
+                self.current[ids] = self.start_world[ids] + self.disp[ids, None] * self.normals[ids]
+        if tool == "sculpt_snake":
+            source.centre = source.centre + delta
+        if not moved:
             return "No vertices under the brush"
-        self._write()
+        if tool == "sculpt_mask":
+            write_mask(self.mesh, self.mask)
+        else:
+            ids = np.concatenate(moved)
+            self.chunks.refresh(self.current, ids)
+            self._write_due(ids)
         self.changed = True
-        return f"{self.label}: {int(mask.sum())} vertices"
+        return f"{self.label}: {int(sum(len(i) for i in moved))} vertices{self.rate_note}"
+
+    def commit_message(self):
+        extra = f", detail +{self.refined:,} vertices" if self.refined else ""
+        return f"{self.label} committed as one undo step{extra}"
 
 
 class SprayStroke(_Stroke):
@@ -463,6 +849,95 @@ class ScrubStroke(_Stroke):
 
     def commit_message(self):
         return f"Frame {self.scene.frame_current}"
+
+
+def off_hand() -> str:
+    from . import onboarding
+    return "/user/hand/right" if onboarding.prefs()["left_handed"] else "/user/hand/left"
+
+
+class BrushDialStroke(_Stroke):
+    """Off-hand trigger in the air: up/down sizes the brush (x2 per 10 cm), wrist roll sets strength.
+
+    Settings only: no undo step; cancel puts both values back.
+    """
+
+    label = "Brush Dial"
+    needs_undo = False
+
+    def __init__(self, context, pose, owner, generation, units, settings, tool):
+        super().__init__(context, pose, owner, generation, units)
+        self.settings = settings
+        self.size_name = {"spray_material": "spray_radius_m", "retopo_loom": "retopo_faces"}.get(
+            tool, "sculpt_radius_m")
+        self.use_strength = self.size_name == "sculpt_radius_m"
+        self.start = (getattr(settings, self.size_name), float(settings.sculpt_strength))
+        self.start_rotation = Quaternion(pose.rotation).normalized()
+        self.size, self.strength = self.start
+
+    def _restore(self, context):
+        setattr(self.settings, self.size_name, self.start[0])
+        self.settings.sculpt_strength = self.start[1]
+        self.size, self.strength = self.start
+
+    def _apply(self, context, pose):
+        rise = (pose.position[2] - self.anchor.z) / self.units
+        if self.size_name == "retopo_faces":
+            from . import retopo
+            self.size = retopo.step_target(self.start[0], round(rise / DIAL_FACES_STEP_M))
+        else:
+            prop = self.settings.bl_rna.properties[self.size_name]
+            self.size = min(prop.hard_max, max(prop.hard_min, self.start[0] * 2.0 ** (rise / DIAL_DOUBLING_M)))
+        setattr(self.settings, self.size_name, self.size)
+        if self.use_strength:
+            relative = self.start_rotation.inverted() @ Quaternion(pose.rotation).normalized()
+            roll = (math.degrees(2.0 * math.atan2(relative.z, relative.w)) + 180.0) % 360.0 - 180.0
+            t, s0 = max(-1.0, min(1.0, roll / 90.0)), self.start[1]
+            # Start value at no roll; +90 degrees reaches 1.0, -90 degrees reaches 0.05.
+            self.strength = max(0.05, min(1.0, s0 + t * ((1.0 - s0) if t > 0 else (s0 - 0.05))))
+            self.settings.sculpt_strength = self.strength
+        self.changed = True
+        return self.readout()
+
+    def readout(self):
+        if self.size_name == "retopo_faces":
+            from . import retopo
+            return f"Retopo {retopo.quads_label(self.size)}"
+        text = f"Brush {self.size * 100.0:.1f} cm"
+        return f"{text} · {round(self.strength * 100)} %" if self.use_strength else text
+
+    def detent(self):
+        if self.size_name == "retopo_faces":
+            return int(self.size)
+        return (math.floor(self.size / 0.005 + 1e-9), math.floor(self.strength * 10.0 + 1e-9))
+
+    def commit_message(self):
+        return self.readout()
+
+
+def _retopo_pull(context, obj, hand):
+    """Retopo Loom trigger: show the running card now, run CurioMesh on the next main-thread tick."""
+    from . import interaction_log, retopo
+    if obj is None or obj.type != "MESH":
+        raise editing.EditRejected("Point the Retopo Loom at a mesh")
+    settings = context.window_manager.xrwb_settings
+    name, target, quality = obj.name, int(settings.retopo_faces), str(settings.retopo_quality)
+    interaction_log.emit("retopo", " ".join(retopo.card_lines({"state": "running"})), context, hand=hand)
+
+    def run():
+        from . import controllers, ui
+        with ui._view3d_override(bpy.context):
+            ctx = bpy.context
+            source = bpy.data.objects.get(name)
+            card = (retopo.run(ctx, source, target, quality) if source is not None
+                    else {"ok": False, "reason": "The mesh is gone"})
+            interaction_log.emit("retopo", " · ".join(retopo.card_lines(card)), ctx, hand=hand,
+                                 level="INFO" if card.get("ok") else "WARNING")
+            controllers.pulse(ctx, hand, "commit" if card.get("ok") else "reject")
+        return None
+
+    bpy.app.timers.register(run, first_interval=0.05)  # One frame for the card to show.
+    return None
 
 
 def build_shape_mesh(kind, dimensions, name):
@@ -657,6 +1132,12 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
     owner = owner or CaptureOwner(InputProvenance.CONTROLLER, "/user/hand/right", 0)
     settings = context.window_manager.xrwb_settings
     units = viewer_scale.world_units_per_metre(context)
+    if tool == "lab_dial":
+        from . import subdiv_lab
+        return subdiv_lab.begin(context, pose, owner, target_generation)
+    if tool == "grow_seed":
+        from . import growth
+        return growth.begin(context, pose, owner, target_generation)
     if tool == "scrub_time":
         transaction = ScrubStroke(context, pose, owner, target_generation, units, settings)
     elif tool == "uv_island":
@@ -683,6 +1164,13 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
         hit, location, normal, _index, evaluated, _matrix_hit = context.scene.ray_cast(
             context.evaluated_depsgraph_get(), origin, direction)
         obj = evaluated.original if hit and evaluated is not None else None
+        if (tool in DIAL_TOOLS and owner.identifier == off_hand()
+                and (obj is None or (Vector(location) - origin).length > DIAL_REACH_M * units)):
+            transaction = BrushDialStroke(context, pose, owner, target_generation, units, settings, tool)
+            editing._ACTIVE_TRANSACTION = transaction
+            return transaction
+        if tool == "retopo_loom":
+            return _retopo_pull(context, obj, owner.identifier)
         if tool == "eyedropper":
             return _eyedrop(context, obj, _index)
         if tool == "spray_material":
@@ -753,7 +1241,7 @@ def _guard(context):
 
 
 def _undo_push(message):
-    if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in bpy.ops.ed.undo_push(message=message):
+    if not bpy.ops.ed.undo_push.poll() or "FINISHED" not in editing.push_undo(message=message):
         raise RuntimeError("Blender rejected the undo entry")
 
 
@@ -830,6 +1318,7 @@ class XRWB_OT_remesh_detail(bpy.types.Operator):
             estimate = float(areas.sum()) / (voxel * voxel)
             if estimate > 1_500_000:
                 raise editing.EditRejected(f"About {estimate:,.0f} vertices: grow yourself or raise Detail")
+            had_mask = read_mask(obj.data) is not None
             obj.data.remesh_voxel_size = voxel
             with context.temp_override(object=obj, active_object=obj, selected_objects=[obj]):
                 if "FINISHED" not in bpy.ops.object.voxel_remesh():
@@ -839,8 +1328,204 @@ class XRWB_OT_remesh_detail(bpy.types.Operator):
             _log(context, str(exc), "WARNING")
             self.report({"WARNING"}, str(exc))
             return {"CANCELLED"}
+        if had_mask and read_mask(obj.data) is None:
+            _log(context, "Remesh cleared the mask.", "WARNING")
         _log(context, f"Remeshed to {len(obj.data.vertices):,} vertices.")
         return {"FINISHED"}
 
 
-CLASSES = (XRWB_OT_add_clay, XRWB_OT_remesh_detail)
+class _MaskAction(bpy.types.Operator):
+    """Base for instant mask actions on the active mesh: one undo step each."""
+
+    undo_name = "Mask"
+    needs_mask = True
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        reason = _guard(context) or ("" if obj is not None and obj.type == "MESH" else "Select a mesh")
+        if reason:
+            cls.poll_message_set(reason)
+        return not reason
+
+    def change(self, context, obj, mask):
+        raise NotImplementedError
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            require_mesh_target(context, obj, "Mask")
+            mask = read_mask(obj.data)
+            if mask is None and self.needs_mask:
+                raise editing.EditRejected("Paint a mask first")
+            message = self.change(context, obj, mask)
+            _undo_push(f"XR {self.undo_name}")
+        except (editing.EditRejected, RuntimeError, ValueError) as exc:
+            _log(context, str(exc), "WARNING")
+            self.report({"WARNING"}, str(exc))
+            return {"CANCELLED"}
+        _log(context, message)
+        return {"FINISHED"}
+
+
+class XRWB_OT_mask_invert(_MaskAction):
+    bl_idname = "xrwb.mask_invert"
+    bl_label = "Invert Mask"
+    bl_description = "Swap masked and unmasked vertices"
+    undo_name = "Mask Invert"
+    needs_mask = False
+
+    def change(self, context, obj, mask):
+        write_mask(obj.data, 1.0 - (np.zeros(len(obj.data.vertices), np.float32) if mask is None else mask))
+        return "Mask inverted."
+
+
+class XRWB_OT_mask_clear(_MaskAction):
+    bl_idname = "xrwb.mask_clear"
+    bl_label = "Clear Mask"
+    bl_description = "Remove the sculpt mask"
+    undo_name = "Mask Clear"
+
+    def change(self, context, obj, mask):
+        obj.data.attributes.remove(obj.data.attributes[MASK_NAME])
+        obj.data.update()
+        return "Mask cleared."
+
+
+class _MaskSpread(_MaskAction):
+    spread = np.maximum
+    verb = "grown"
+
+    def change(self, context, obj, mask):
+        edges = np.empty(len(obj.data.edges) * 2, dtype=np.int64)
+        obj.data.edges.foreach_get("vertices", edges)
+        a, b = edges.reshape(-1, 2).T
+        out = mask.copy()
+        self.spread.at(out, a, mask[b])
+        self.spread.at(out, b, mask[a])
+        write_mask(obj.data, out)
+        return f"Mask {self.verb} one step."
+
+
+class XRWB_OT_mask_grow(_MaskSpread):
+    bl_idname = "xrwb.mask_grow"
+    bl_label = "Grow Mask"
+    bl_description = "Spread the mask one edge outward"
+    undo_name = "Mask Grow"
+
+
+class XRWB_OT_mask_shrink(_MaskSpread):
+    bl_idname = "xrwb.mask_shrink"
+    bl_label = "Shrink Mask"
+    bl_description = "Pull the mask one edge inward"
+    undo_name = "Mask Shrink"
+    spread = np.minimum
+    verb = "shrunk"
+
+
+def extract_masked(context, obj, thickness_m=None):
+    """New object from the fully masked faces, boundary smoothed, with a Solidify modifier."""
+    import bmesh
+
+    mesh = obj.data
+    bm = bmesh.new()
+    try:
+        bm.from_mesh(mesh)
+        layer = bm.verts.layers.float.get(MASK_NAME)
+        if layer is None or not any(v[layer] >= 0.5 for v in bm.verts):
+            raise editing.EditRejected("Paint a mask first")
+        drop = [f for f in bm.faces if not all(v[layer] >= 0.5 for v in f.verts)]
+        if len(drop) == len(bm.faces):
+            raise editing.EditRejected("No face is fully masked: paint a bigger area")
+        bmesh.ops.delete(bm, geom=drop, context="FACES")
+        bm.verts.layers.float.remove(layer)
+        edge_verts = list({v for e in bm.edges if e.is_boundary for v in e.verts})
+        for _ in range(3):
+            bmesh.ops.smooth_vert(bm, verts=edge_verts, factor=0.5, use_axis_x=True, use_axis_y=True,
+                                  use_axis_z=True)
+        new_mesh = bpy.data.meshes.new(f"{obj.name} Extract")
+        bm.to_mesh(new_mesh)
+    finally:
+        bm.free()
+    for material in mesh.materials:
+        new_mesh.materials.append(material)
+    new_obj = bpy.data.objects.new(f"{obj.name} Extract", new_mesh)
+    new_obj.matrix_world = obj.matrix_world
+    (obj.users_collection[0] if obj.users_collection else context.collection).objects.link(new_obj)
+    units = viewer_scale.world_units_per_metre(context)
+    scale = sum(abs(value) for value in obj.matrix_world.to_scale()) / 3.0
+    if thickness_m is None:
+        thickness_m = float(_opt(context.window_manager.xrwb_settings, "mask_extract_m", 0.004))
+    solid = new_obj.modifiers.new("Solidify", "SOLIDIFY")
+    solid.thickness = thickness_m * units / max(scale, 1.0e-9)
+    solid.offset = 1.0
+    for other in context.selected_objects:
+        other.select_set(False)
+    new_obj.select_set(True)
+    context.view_layer.objects.active = new_obj
+    return new_obj
+
+
+class XRWB_OT_mask_extract(_MaskAction):
+    bl_idname = "xrwb.mask_extract"
+    bl_label = "Extract Mask"
+    bl_description = "Copy the masked area into a new editable shell object (Solidify modifier)"
+    undo_name = "Mask Extract"
+
+    def change(self, context, obj, mask):
+        new_obj = extract_masked(context, obj)
+        return f"Extracted {len(new_obj.data.polygons):,} faces into {new_obj.name}."
+
+
+class XRWB_OT_sculpt_detail(bpy.types.Operator):
+    bl_idname = "xrwb.sculpt_detail"
+    bl_label = "Detail"
+    bl_description = "Add triangles where the surface is stretched, near the brush (or everywhere without a ray)"
+
+    origin: bpy.props.FloatVectorProperty(size=3, options={"SKIP_SAVE"})
+    direction: bpy.props.FloatVectorProperty(size=3, options={"SKIP_SAVE"})
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        reason = _guard(context) or ("" if obj is not None and obj.type == "MESH" else "Select a mesh")
+        if reason:
+            cls.poll_message_set(reason)
+        return not reason
+
+    def execute(self, context):
+        obj = context.active_object
+        try:
+            require_mesh_target(context, obj, "Detail")
+            settings = context.window_manager.xrwb_settings
+            units = viewer_scale.world_units_per_metre(context)
+            scale = sum(abs(value) for value in obj.matrix_world.to_scale()) / 3.0
+            target = float(settings.remesh_detail_m) * units / max(scale, 1.0e-9)
+            count = len(obj.data.vertices)
+            touched = np.ones(count, dtype=bool)
+            if Vector(self.direction).length > 0.0:
+                inverse = obj.matrix_world.inverted()
+                hit, location, _n, _i = obj.ray_cast(
+                    inverse @ Vector(self.origin), (inverse.to_3x3() @ Vector(self.direction)).normalized(),
+                    depsgraph=context.evaluated_depsgraph_get())
+                if not hit:
+                    raise editing.EditRejected("Aim at the surface to add detail")
+                flat = np.empty(count * 3, dtype=np.float32)
+                get_positions(obj.data, flat)
+                radius = float(settings.sculpt_radius_m) * units / max(scale, 1.0e-9)
+                touched = np.linalg.norm(flat.reshape(-1, 3) - np.array(location), axis=1) < radius
+            added, capped, _saved = refine_mesh(obj.data, touched, target)
+            if not added:
+                raise editing.EditRejected("Nothing is stretched enough here")
+            _undo_push("XR Sculpt Detail")
+        except (editing.EditRejected, RuntimeError, ValueError) as exc:
+            _log(context, str(exc), "WARNING")
+            self.report({"WARNING"}, str(exc))
+            return {"CANCELLED"}
+        _log(context, f"Detail added {added:,} vertices" + ("; capped: Remesh for Detail" if capped else "."))
+        return {"FINISHED"}
+
+
+CLASSES = (XRWB_OT_add_clay, XRWB_OT_remesh_detail, XRWB_OT_mask_invert, XRWB_OT_mask_clear,
+           XRWB_OT_mask_grow, XRWB_OT_mask_shrink, XRWB_OT_mask_extract, XRWB_OT_sculpt_detail)
+

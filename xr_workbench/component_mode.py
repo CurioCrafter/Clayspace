@@ -372,7 +372,7 @@ def mesh_action(context, key):
         raise editing.EditRejected(f"Blender could not {label.lower()}")
     forget_cache()
     if bpy.ops.ed.undo_push.poll():
-        bpy.ops.ed.undo_push(message=f"XR {label}")
+        editing.push_undo(message=f"XR {label}")
     return f"{label}: done (one undo)"
 
 

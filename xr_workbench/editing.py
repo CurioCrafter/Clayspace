@@ -727,7 +727,7 @@ class EditTransaction:
             _COMMIT_PAYLOADS.pop(self.identifier, None)
             return EditResult(Decision.REJECTED, "Blender rejected the undoable commit")
         try:
-            undo_result = bpy.ops.ed.undo_push(message="XR Workbench Edit")
+            undo_result = push_undo(message="XR Workbench Edit")
         except RuntimeError:
             self._restore_original(context)
             _COMMIT_PAYLOADS.pop(self.identifier, None)
@@ -898,7 +898,7 @@ class ObjectSelectionTransaction:
             _COMMIT_PAYLOADS.pop(self.identifier, None)
             return EditResult(Decision.REJECTED, "Blender rejected object selection")
         try:
-            undo_result = bpy.ops.ed.undo_push(message="XR Workbench Select Object")
+            undo_result = push_undo(message="XR Workbench Select Object")
         except RuntimeError:
             _restore_object_selection(context, self.original_selection)
             _COMMIT_PAYLOADS.pop(self.identifier, None)
@@ -978,6 +978,12 @@ def begin_object_selection(
 
 def active_transaction() -> EditTransaction | ObjectSelectionTransaction | None:
     return _ACTIVE_TRANSACTION
+
+
+def push_undo(message):
+    """Every XR undo step goes through Live Cage so no step records hidden modifiers."""
+    from . import live_cage
+    return live_cage.push_undo(message)
 
 
 def cancel_active(context: Any) -> EditResult:

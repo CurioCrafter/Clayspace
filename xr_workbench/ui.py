@@ -14,7 +14,7 @@ import bpy
 from bpy_extras.io_utils import ExportHelper
 
 from . import (
-    controllers, editing, hands, onboarding, physical_tools, polish, runtime, tool_wheel, viewer_scale,
+    controllers, editing, hands, onboarding, physical_tools, polish, retopo, runtime, tool_wheel, viewer_scale,
 )
 
 # Column-major in a 5 x 2 grid: Create/Edit, Sculpt/Materials, Animate/Menus,
@@ -48,7 +48,16 @@ CUT_TOOLS = (("cut_difference", "Cut Away", "Draw a retained cutter into the sel
 SCULPT_TOOLS = (("sculpt_grab", "Grab", "Hold trigger on the surface and pull a soft region with your hand"),
                 ("sculpt_clay", "Clay", "Hold trigger and sweep over the surface to build up (or dig)"),
                 ("sculpt_smooth", "Smooth", "Hold trigger and sweep to relax bumps"),
-                ("sculpt_flatten", "Flatten", "Hold trigger and sweep to level the surface under the brush"))
+                ("sculpt_flatten", "Flatten", "Hold trigger and sweep to level the surface under the brush"),
+                ("sculpt_snake", "Snake Hook", "Hold trigger on the surface and pull out a long horn or tentacle"),
+                ("sculpt_inflate", "Inflate", "Hold trigger and sweep to swell the surface along its normals"),
+                ("sculpt_crease", "Crease", "Hold trigger and sweep to cut a sharp groove (Dig raises a ridge)"),
+                ("sculpt_layer", "Layer", "Hold trigger and sweep to raise a flat layer of one fixed height"),
+                ("sculpt_mask", "Mask", "Hold trigger and sweep to protect the surface from other brushes"))
+# 0.20 procedural tools: Subdivision Lab dial, Guided Growth seed, CurioMesh Retopo Loom.
+LAB_TOOLS = (("lab_dial", "Lab Dial", "Hold trigger: up/down sets levels, wrist roll the scheme's main value"),
+             ("grow_seed", "Grow", "Hold trigger to plant, pull for direction and length; A re-rolls"),
+             ("retopo_loom", "Retopo", "Point at a mesh and pull the trigger for a clean quad copy beside it"))
 PAINT_TOOLS = (("spray_material", "Spray Material",
                 "Hold trigger to spray the loaded material onto faces; trigger a block to load it"),
                ("paint_vertex", "Paint Colour",
@@ -68,7 +77,7 @@ QUICK_TOOLS = (("place_object", "Place Shape", "A ghost follows your ray; trigge
                 "Edit Mode: hold trigger and pull to extrude the selected vertices, edges or faces"))
 PLACE_TOOLS = QUICK_TOOLS  # Older name kept for scripts.
 ALL_TOOLS = (EDIT_TOOLS + EDGE_TOOLS + DRAW_TOOLS + CUT_TOOLS + SCULPT_TOOLS + PAINT_TOOLS + ANIMATE_TOOLS
-             + QUICK_TOOLS)
+             + QUICK_TOOLS + LAB_TOOLS)
 
 def _set_status(settings, summary: str, detail: str = "") -> None:
     settings.status_summary = summary
@@ -468,6 +477,37 @@ class XRWB_PG_settings(bpy.types.PropertyGroup):
         description="Physical brush radius; shrink yourself for finer detail", options={"SKIP_SAVE"})
     sculpt_strength: bpy.props.FloatProperty(name="Strength", default=0.5, min=0.05, max=1.0,
                                              options={"SKIP_SAVE"})
+    sculpt_radial: bpy.props.IntProperty(
+        name="Radial", default=0, min=0, max=12, options={"SKIP_SAVE"},
+        description="Repeat every brush this many times around the object's local Z (0 = off)")
+    sculpt_layer_height_m: bpy.props.FloatProperty(
+        name="Layer Height", default=0.005, min=0.001, max=0.05, subtype="DISTANCE", unit="LENGTH",
+        description="Physical height of the Layer brush", options={"SKIP_SAVE"})
+    mask_extract_m: bpy.props.FloatProperty(
+        name="Extract Thickness", default=0.004, min=0.0005, max=0.05, subtype="DISTANCE", unit="LENGTH",
+        description="Physical thickness of a Mask Extract shell", options={"SKIP_SAVE"})
+    sculpt_detail: bpy.props.EnumProperty(
+        name="Detail Where Stretched", default="AUTO", options={"SKIP_SAVE"},
+        items=(("AUTO", "Auto", "On for Snake Hook and Inflate"), ("ON", "On", "Every stroke adds detail"),
+               ("OFF", "Off", "Never add detail")))
+    retopo_faces: bpy.props.IntProperty(
+        name="Target Faces", default=5000, min=500, max=20000, step=500, options={"SKIP_SAVE"},
+        description="How many quads the Retopo Loom aims for (steps of 500)")
+    retopo_quality: bpy.props.EnumProperty(
+        name="Quality", default="Balanced", options={"SKIP_SAVE"},
+        items=tuple((key, key, f"CurioMesh {value.title()}") for key, value in retopo.QUALITY.items()))
+    tool_props: onboarding.pref_property(
+        bpy.props.BoolProperty, "tool_props", name="Tool Props",
+        description="Hold a small 3D model of each tool; off shows only the ring cursors")
+    tool_belt: onboarding.pref_property(
+        bpy.props.BoolProperty, "tool_belt", name="Tool Belt",
+        description="Up to 6 tools float at your hip: reach and squeeze a grip near one to swap")
+    live_cage: onboarding.pref_property(
+        bpy.props.BoolProperty, "live_cage", name="Live Cage",
+        description="Heavy modifiers pause while you hold an edit and come back when you let go")
+    menu_compact: onboarding.pref_property(
+        bpy.props.BoolProperty, "menu_compact", name="Compact",
+        description="Shorter hand menu: no help lines, icon-only page tabs")
     place_kind: bpy.props.EnumProperty(
         name="Shape", default="CUBE", options={"SKIP_SAVE"},
         items=tuple((key, label, "", icon, index) for index, (key, (label, icon, _size))
@@ -996,7 +1036,7 @@ class XRWB_OT_bevel_object(bpy.types.Operator):
         modifier.limit_method = "ANGLE"
         modifier.use_clamp_overlap = True
         try:
-            if "FINISHED" in bpy.ops.ed.undo_push(message="XR Bevel Object"):
+            if "FINISHED" in editing.push_undo(message="XR Bevel Object"):
                 return {"FINISHED"}
         except RuntimeError:
             pass
@@ -1055,7 +1095,7 @@ def _add_primitive(context, kind):
         return {"CANCELLED"}
     obj = context.view_layer.objects.active
     # The nested primitive call does not retain a post-add XR undo state.
-    if "FINISHED" in bpy.ops.ed.undo_push(message=f"XR Add {label}"):
+    if "FINISHED" in editing.push_undo(message=f"XR Add {label}"):
         return {"FINISHED"}
     # Never leave an add that cannot be undone.
     mesh = obj.data
@@ -1118,6 +1158,9 @@ class XRWB_OT_command_menu(bpy.types.Operator):
             settings.command_page = self.page
             visible = False  # Settings opens/replaces the one existing surface.
         controllers._cancel_active(context, "Hand menu toggled; previous capture cancelled")
+        if not visible:
+            from . import live_cage
+            live_cage.restore_all(context, include_caged=True, timed=False)  # Menus show the real result.
         controllers._native_menu_open = False  # The command deck is a panel, not a list.
         with _view3d_override(context):
             ok, message = controllers._native_call(
@@ -1240,6 +1283,405 @@ class XRWB_OT_workflow(bpy.types.Operator):
         return {"FINISHED"}
 
 
+# ---- Folding Hand Menu ------------------------------------------------------
+# Each hand-menu page is cut into named sections: a header button (click =
+# fold), a summary chip when closed, and a pin. Open / pinned / compact state
+# lives in vr_prefs.json (onboarding), so it survives restarts.
+
+def _compact():
+    return bool(onboarding.prefs()["menu_compact"])
+
+
+def _help(layout, text):
+    """A help line; Compact mode hides it."""
+    if not _compact():
+        layout.label(text=text)
+
+
+def _section_create_shapes(layout, context, settings):
+    grid = layout.grid_flow(columns=3, even_columns=True, align=True)
+    for key, (label, icon, _operator, _dimensions) in PRIMITIVES.items():
+        grid.operator("xrwb.add_primitive", text=label, icon=icon).kind = key
+    layout.menu("VIEW3D_MT_add", text="All Blender Add Options", icon="ADD")
+
+
+def _section_create_draw(layout, context, settings):
+    _tool_buttons(layout, context, DRAW_TOOLS)
+    _help(layout, "Close menu. Start at the controller tip; drag the opposite corner.")
+
+
+def _section_create_booleans(layout, context, settings):
+    layout.prop(settings, "cutter_shape", expand=True)
+    _tool_buttons(layout, context, CUT_TOOLS)
+    reason = _scene_tool_reason(context, "cut_difference")
+    if reason:
+        _label_lines(layout, reason, _CARD_TEXT_WIDTH)
+    row = layout.row(align=True)
+    row.label(text="Combine:")
+    for operation, label in (("UNION", "Union"), ("DIFFERENCE", "Subtract"), ("INTERSECT", "Intersect")):
+        row.operator("xrwb.boolean_selected", text=label).operation = operation
+    row.operator("xrwb.apply_booleans", text="Apply")
+    _help(layout, "Cutters stay editable: grab one to change the result. Target = active.")
+
+
+def _section_edit_tools(layout, context, settings):
+    from . import component_mode
+    _tool_buttons(layout, context, EDIT_TOOLS)
+    row = layout.row(align=True)
+    mode = component_mode.current_mode(context)
+    for key, label, icon in component_mode.MODES:
+        row.operator("xrwb.component_mode", text=label, icon=icon, depress=mode == key).mode = key
+    row.prop(settings, "multi_select", text="Multi", toggle=True)
+    row = layout.row(align=True)
+    row.operator("xrwb.history_undo", text="Undo")
+    row.operator("xrwb.history_redo", text="Redo")
+    row.operator("xrwb.controller_cancel", text="Cancel Edit")
+    _help(layout, "Hold trigger / drag / release. Left B or Y cancels.")
+
+
+def _section_edit_edges(layout, context, settings):
+    _tool_buttons(layout, context, EDGE_TOOLS, columns=2)
+    layout.row(align=True).operator("xrwb.bevel_object", text="Bevel Object")
+    reason = _scene_tool_reason(context, "select") or _bevel_object_reason(context)
+    if reason:
+        _label_lines(layout, reason, _CARD_TEXT_WIDTH)
+    row = layout.row(align=True)
+    row.prop(settings, "bevel_width_m", text="Object Bevel")
+    row.prop(settings, "bevel_segments", text="Segments")
+    _help(layout, "Edge tools edit the base mesh; Object Bevel works after Boolean modifiers.")
+
+
+def _section_edit_snap(layout, context, settings):
+    layout.prop(settings, "edit_constraint", expand=True)
+    row = layout.row(align=True)
+    row.prop(settings, "translation_snap", text="Move Snap")
+    row.prop(settings, "rotation_snap_degrees", text="Angle Snap")
+    row.prop(settings, "scale_snap", text="Scale Snap")
+
+
+def _origin_reason(context):
+    reason = _scene_tool_reason(context, "select")
+    if not reason and not context.selected_editable_objects:
+        reason = "Select an editable object to set its origin."
+    return reason
+
+
+def _section_edit_origin(layout, context, settings):
+    reason = _origin_reason(context)
+    if reason:
+        layout.label(text=wrap(reason, width=_CARD_TEXT_WIDTH, max_lines=1, placeholder="...")[0], icon="ERROR")
+    origins = layout.column(align=True)
+    origins.enabled = not reason
+    row = origins.row(align=True)
+    row.operator("object.origin_set", text="Origin to Geometry").type = "ORIGIN_GEOMETRY"
+    row.operator("object.origin_set", text="Origin to 3D Cursor").type = "ORIGIN_CURSOR"
+    origins.operator("view3d.snap_cursor_to_selected", text="3D Cursor to Selection")
+
+
+def _section_edit_object(layout, context, settings):
+    from . import live_cage
+    obj = context.active_object
+    row = layout.row(align=True)
+    row.prop(settings, "live_cage", text="Live Cage", toggle=True)
+    current = live_cage.mode_of(obj) if obj is not None else ""
+    for mode in live_cage.MODES:
+        cell = row.row(align=True)
+        cell.enabled = obj is not None
+        cell.operator("xrwb.live_cage_mode", text=mode.title(), depress=current == mode).mode = mode
+    _help(layout, "Live Cage: heavy modifiers pause while you hold an edit of this object.")
+
+
+def _section_sculpt_tools(layout, context, settings):
+    _tool_buttons(layout, context, SCULPT_TOOLS, columns=3)
+    row = layout.row(align=True)
+    row.prop(settings, "sculpt_invert", text="Dig (carve)", toggle=True)
+    row.prop(settings, "use_pressure", text="Trigger Pressure", toggle=True)
+    _help(layout, "Off-hand trigger in the air: Brush Dial (up/down size, roll strength).")
+
+
+def _section_sculpt_brush(layout, context, settings):
+    row = layout.row(align=True)
+    row.prop(settings, "sculpt_radius_m", text="Brush")
+    row.prop(settings, "sculpt_strength", text="Strength")
+    layout.prop(settings, "sculpt_layer_height_m", text="Layer Height")
+    _help(layout, "Brush, spray and detail sizes are physical: shrink for finer work.")
+    _size_controls(layout, context)
+
+
+def _section_sculpt_symmetry(layout, context, settings):
+    row = layout.row(align=True)
+    row.prop(settings, "sculpt_mirror_x", text="Mirror X", toggle=True)
+    row.prop(settings, "sculpt_radial", text="Radial")
+
+
+def _section_sculpt_mask(layout, context, settings):
+    row = layout.row(align=True)
+    for action, label in (("invert", "Invert"), ("clear", "Clear"), ("grow", "Grow"), ("shrink", "Shrink")):
+        row.operator(f"xrwb.mask_{action}", text=label)
+    row = layout.row(align=True)
+    row.operator("xrwb.mask_extract", text="Extract", icon="MOD_SOLIDIFY")
+    row.prop(settings, "mask_extract_m", text="Thickness")
+
+
+def _section_sculpt_detail(layout, context, settings):
+    layout.prop(settings, "sculpt_detail", expand=True)
+    row = layout.row(align=True)
+    row.operator("xrwb.add_clay", text="Clay Ball", icon="MESH_ICOSPHERE")
+    row.operator("xrwb.remesh_detail", text="Remesh for Detail")
+    row.prop(settings, "remesh_detail_m", text="Detail")
+    layout.operator("xrwb.sculpt_detail", text="Refine Stretched Now")
+    _help(layout, "Native Sculpt Mode brushes stay on the desktop panel (Menus).")
+
+
+def _section_sculpt_lab(layout, context, settings):
+    from . import subdiv_lab
+    _tool_buttons(layout, context, LAB_TOOLS[:1], columns=1)
+    grid = layout.grid_flow(columns=3, even_columns=True, align=True)
+    for kind, (label, _help_text, _name) in subdiv_lab.SCHEMES.items():
+        grid.operator("xrwb.lab_add", text=label).kind = kind
+    grid.operator("xrwb.lab_bake", text="Bake", icon="CHECKMARK")
+
+
+def _section_sculpt_growth(layout, context, settings):
+    from . import growth
+    _tool_buttons(layout, context, LAB_TOOLS[1:2], columns=1)
+    row = layout.row(align=True)
+    for kind, label in growth.KINDS.items():
+        row.operator("xrwb.grow_kind", text=label, depress=growth.STATE["kind"] == kind).kind = kind
+    layout.operator("xrwb.path_array", text="Array Along Path", icon="MOD_ARRAY")
+
+
+def _section_sculpt_retopo(layout, context, settings):
+    _tool_buttons(layout, context, LAB_TOOLS[2:], columns=1)
+    row = layout.row(align=True)
+    row.prop(settings, "retopo_faces", text="Target Faces")
+    row.operator("xrwb.retopo_analyze", text="Analyze", icon="VIEWZOOM")
+    layout.prop(settings, "retopo_quality", expand=True)
+    _help(layout, "CurioMesh makes a new quad object beside the source; one undo step.")
+
+
+def _section_paint_materials(layout, context, settings):
+    from . import materials_lab, node_garden
+    row = layout.row(align=True)
+    row.operator("xrwb.material_shelf", text="Shelf Away" if materials_lab.shelf_collection(context) else "Shelf",
+                 icon="MATERIAL")
+    row.operator("xrwb.show_material_logic", text="Logic", icon="NODETREE")
+    row.operator("xrwb.node_garden", text="Garden Away" if node_garden.is_out(context) else "Node Garden",
+                 icon="NODE").action = "TOGGLE"
+    row.operator("xrwb.save_material_preset", text="Save Preset", icon="FILE_TICK")
+    grid = layout.grid_flow(columns=4, even_columns=True, align=True)
+    for key, (label, _inputs, _recipe) in materials_lab.PRESETS.items():
+        if key not in materials_lab.UTILITY_PRESETS:
+            grid.operator("xrwb.pick_material", text=label).identifier = key
+    mine = materials_lab.user_presets()
+    if mine:
+        grid = layout.grid_flow(columns=4, even_columns=True, align=True)
+        for name in mine[:4]:
+            grid.operator("xrwb.pick_material", text=name, icon="USER").identifier = f"USER:{name}"
+    else:
+        _help(layout, "Node Garden: the real node tree as blocks. Save Preset: for every scene.")
+
+
+def _section_paint_tools(layout, context, settings):
+    _tool_buttons(layout, context, PAINT_TOOLS, columns=1)
+    row = layout.row(align=True)
+    row.label(text=f"Loaded: {settings.spray_material or 'none'}", icon="BRUSH_DATA")
+    row.prop(settings, "spray_radius_m", text="Spray")
+    row.operator("xrwb.apply_material", text="Apply to Selected")
+    layout.prop(context.window_manager.xr_session_settings.shading, "type", expand=True)
+    _help(layout, "Trigger a block to load it; hold trigger on a mesh to spray.")
+
+
+def _section_animate_keys(layout, context, settings):
+    tool_settings = context.scene.tool_settings
+    row = layout.row(align=True)
+    row.operator("xrwb.anim_key", text="Key Selected", icon="KEY_HLT")
+    row.operator("xrwb.anim_key", text="Delete Key", icon="KEY_DEHLT").delete = True
+    row.prop(tool_settings, "use_keyframe_insert_auto", text="Record", toggle=True)
+    row = layout.row(align=True)
+    for label, jump, delta in (("|<", "START", 0), ("< Key", "PREV_KEY", 0), ("-1", "STEP", -1),
+                               ("+1", "STEP", 1), ("Key >", "NEXT_KEY", 0), (">|", "END", 0)):
+        op = row.operator("xrwb.anim_frame", text=label)
+        op.jump, op.delta = jump, delta
+    row = layout.row(align=True)
+    row.operator("xrwb.anim_play", text="Play / Pause", icon="PLAY")
+    row.prop(context.scene, "frame_current", text="Frame")
+
+
+def _section_animate_tools(layout, context, settings):
+    _tool_buttons(layout, context, ANIMATE_TOOLS, columns=1)
+    row = layout.row(align=True)
+    row.prop(settings, "scrub_frames_per_m", text="Frames / m")
+    row.prop(context.scene, "frame_start", text="Start")
+    row.prop(context.scene, "frame_end", text="End")
+    row = layout.row(align=True)
+    for editor, label in (("DOPESHEET", "Dope Sheet"), ("FCURVES", "Graph"), ("TIMELINE", "Timeline")):
+        row.operator("xrwb.workspace_editor", text=label).editor = editor
+    _help(layout, "Record keys every grip move. Scrub: hold trigger, move sideways.")
+
+
+def _active_label(tools, settings):
+    return next((label for key, label, _d in tools if key == settings.edit_tool), "")
+
+
+def _brush_summary(context, settings):
+    parts = [f"Brush {polish.length(settings.sculpt_radius_m)}", f"{round(settings.sculpt_strength * 100)} %"]
+    if settings.sculpt_mirror_x:
+        parts.append("Mirror X")
+    if settings.sculpt_radial:
+        parts.append(f"Radial {settings.sculpt_radial}")
+    return " · ".join(parts)
+
+
+def _growth_summary(context, settings):
+    from . import growth
+    return f"Plants a {growth.KINDS[growth.STATE['kind']]}"
+
+
+# key: (title, icon, body, summary(context, settings) -> str). A page's sections are drawn in this order.
+SECTIONS = {
+    "CREATE.shapes": ("Shapes", "MESH_CUBE", _section_create_shapes, lambda c, s: "Cube, Sphere, ..."),
+    "CREATE.draw": ("Draw a Volume", "MOD_BUILD", _section_create_draw,
+                    lambda c, s: _active_label(DRAW_TOOLS, s) or "Hold / size / release"),
+    "CREATE.booleans": ("Booleans", "MOD_BOOLEAN", _section_create_booleans,
+                        lambda c, s: _scene_tool_reason(c, "cut_difference") or _active_label(CUT_TOOLS, s)),
+    "EDIT.tools": ("Tools", "TOOL_SETTINGS", _section_edit_tools, lambda c, s: _active_label(EDIT_TOOLS, s)),
+    "EDIT.edges": ("Edges and Bevel", "MOD_BEVEL", _section_edit_edges,
+                   lambda c, s: _active_label(EDGE_TOOLS, s) or f"Bevel {polish.length(s.bevel_width_m)}"),
+    "EDIT.snap": ("Snap", "SNAP_ON", _section_edit_snap,
+                  lambda c, s: f"{s.edit_constraint} · move {s.translation_snap:g} · {s.rotation_snap_degrees:g}°"),
+    "EDIT.origin": ("Object Origin", "OBJECT_ORIGIN", _section_edit_origin, lambda c, s: _origin_reason(c)),
+    "EDIT.object": ("Object", "OBJECT_DATA", _section_edit_object,
+                    lambda c, s: "Live Cage " + ("on" if s.live_cage else "off")),
+    "SCULPT.tools": ("Tools", "SCULPTMODE_HLT", _section_sculpt_tools,
+                     lambda c, s: _scene_tool_reason(c, "sculpt_clay") or _active_label(SCULPT_TOOLS, s)),
+    "SCULPT.brush": ("Brush", "BRUSH_DATA", _section_sculpt_brush, _brush_summary),
+    "SCULPT.symmetry": ("Symmetry", "MOD_MIRROR", _section_sculpt_symmetry, _brush_summary),
+    "SCULPT.mask": ("Mask", "MOD_MASK", _section_sculpt_mask, lambda c, s: "Invert · Grow · Extract"),
+    "SCULPT.detail": ("Detail", "MOD_REMESH", _section_sculpt_detail,
+                      lambda c, s: f"Stretched: {s.sculpt_detail.title()}"),
+    "SCULPT.lab": ("Subdivision Lab", "MOD_SUBSURF", _section_sculpt_lab, lambda c, s: "Twist, Hard Surface, ..."),
+    "SCULPT.growth": ("Growth", "OUTLINER_OB_CURVE", _section_sculpt_growth, _growth_summary),
+    "SCULPT.retopo": ("Retopo", "MESH_GRID", _section_sculpt_retopo,
+                      lambda c, s: f"{retopo.quads_label(s.retopo_faces)} · {s.retopo_quality}"),
+    "PAINT.materials": ("Materials", "MATERIAL", _section_paint_materials, lambda c, s: "Shelf, presets, nodes"),
+    "PAINT.tools": ("Spray and Paint", "BRUSH_DATA", _section_paint_tools,
+                    lambda c, s: f"Loaded: {s.spray_material or 'none'}"),
+    "ANIMATE.keys": ("Keys and Playback", "KEY_HLT", _section_animate_keys,
+                     lambda c, s: f"Frame {c.scene.frame_current}"),
+    "ANIMATE.tools": ("Scrub and Editors", "TIME", _section_animate_tools,
+                      lambda c, s: _active_label(ANIMATE_TOOLS, s)),
+}
+SECTIONED_PAGES = ("CREATE", "EDIT", "SCULPT", "PAINT", "ANIMATE")
+# Each page opens its first section until the user folds something.
+DEFAULT_OPEN = tuple(next(key for key in SECTIONS if key.startswith(page + ".")) for page in SECTIONED_PAGES)
+
+
+def open_sections():
+    text = onboarding.prefs()["menu_open"]
+    return list(DEFAULT_OPEN) if text == "" else polish.parse_keys(text, SECTIONS)
+
+
+def pinned_sections():
+    return polish.parse_keys(onboarding.prefs()["menu_pinned"], SECTIONS)
+
+
+def section(layout, context, key):
+    """Header row (fold button + pin); returns the body column when open, else None."""
+    title, _icon, body, summary = SECTIONS[key]
+    is_open = key in open_sections()
+    settings = context.window_manager.xrwb_settings
+    row = layout.row(align=True)
+    text = title
+    if not is_open:
+        try:
+            chip = summary(context, settings)
+        except (AttributeError, KeyError, ReferenceError, TypeError, ValueError):
+            chip = ""
+        text = f"{title}:  {chip}" if chip else title
+    op = row.operator("xrwb.menu_section", text=text, emboss=False,
+                      icon="DISCLOSURE_TRI_DOWN" if is_open else "DISCLOSURE_TRI_RIGHT")
+    op.key, op.action = key, "TOGGLE"
+    op = row.operator("xrwb.menu_section", text="", emboss=False,
+                      icon="PINNED" if key in pinned_sections() else "UNPINNED")
+    op.key, op.action = key, "PIN"
+    if not is_open:
+        return None
+    column = layout.column(align=True)
+    body(column, context, settings)
+    return column
+
+
+class XRWB_OT_menu_section(bpy.types.Operator):
+    bl_idname = "xrwb.menu_section"
+    bl_label = "Hand Menu Section"
+    bl_description = "Fold or unfold this section, or pin it to the top of every page (2 at most)"
+    key: bpy.props.StringProperty(options={"SKIP_SAVE"})
+    action: bpy.props.EnumProperty(items=(("TOGGLE", "Toggle", ""), ("PIN", "Pin", "")), options={"SKIP_SAVE"})
+
+    def execute(self, context):
+        from . import interaction_log
+        if self.key not in SECTIONS:
+            return {"CANCELLED"}
+        title = SECTIONS[self.key][0]
+        if self.action == "PIN":
+            text, pinned, evicted = polish.pin_key(onboarding.prefs()["menu_pinned"], self.key, SECTIONS)
+            onboarding.set_pref("menu_pinned", text)
+            message = f"{title} pinned" if pinned else f"{title} unpinned"
+            if evicted:
+                message += f"; {SECTIONS[evicted][0]} unpinned (2 at most)"
+            interaction_log.emit("menu", message, context)
+            kind = "click"
+        else:
+            text, opened = polish.toggle_key(",".join(open_sections()), self.key, SECTIONS)
+            onboarding.set_pref("menu_open", text or ",")  # "," = all folded, unlike "" = never touched.
+            kind = "detent" if opened else "tick"
+        controllers.pulse(context, controllers._pointer_hand, kind)
+        if context.area:
+            context.area.tag_redraw()
+        return {"FINISHED"}
+
+
+class XRWB_OT_live_cage_mode(bpy.types.Operator):
+    bl_idname = "xrwb.live_cage_mode"
+    bl_label = "Live Cage Mode"
+    bl_description = "Auto: cage only slow objects. On: always. Off: never. One undo step"
+    mode: bpy.props.EnumProperty(items=[(m, m.title(), "") for m in ("AUTO", "ON", "OFF")], options={"SKIP_SAVE"})
+
+    def execute(self, context):
+        from . import interaction_log, live_cage
+        obj = context.active_object
+        if obj is None or obj.library or not bpy.ops.ed.undo_push.poll():
+            self.report({"WARNING"}, "Select an editable object (and keep Global Undo on)")
+            return {"CANCELLED"}
+        live_cage.set_mode(obj, self.mode)
+        editing.push_undo(f"XR Live Cage {self.mode.title()}")
+        interaction_log.emit("live_cage", f"Live Cage {self.mode.title()} for {obj.name}", context)
+        return {"FINISHED"}
+
+
+class XRWB_OT_retopo_analyze(bpy.types.Operator):
+    bl_idname = "xrwb.retopo_analyze"
+    bl_label = "Analyze for Retopo"
+    bl_description = "CurioMesh reads the active mesh and says how it would retopologise it; nothing changes"
+
+    def execute(self, context):
+        from . import interaction_log
+        obj = context.active_object
+        if obj is None or obj.type != "MESH":
+            self.report({"WARNING"}, "Select a mesh to analyze")
+            return {"CANCELLED"}
+        info = retopo.analyze(context, obj)
+        if info.get("ok"):
+            message = f"{obj.name}: {info['faces']:,} faces · {info['profile']} · {info['strategy']}"
+            if info.get("warning"):
+                message += f" · {info['warning']}"
+        else:
+            message = f"Analyze failed: {info.get('reason', 'no reason given')}"
+        interaction_log.emit("retopo", message, context, level="INFO" if info.get("ok") else "WARNING")
+        return {"FINISHED"} if info.get("ok") else {"CANCELLED"}
+
+
 class XRWB_PT_command_deck(bpy.types.Panel):
     bl_label = "VR / BLENDER COMMANDS"
     bl_idname = "XRWB_PT_command_deck"
@@ -1250,164 +1692,41 @@ class XRWB_PT_command_deck(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         settings = context.window_manager.xrwb_settings
-        layout.scale_y = 1.25
+        compact = _compact()
+        layout.scale_y = 1.0 if compact else 1.25
         row = layout.row(align=True)
         row.label(text="HAND MENU", icon="ORIENTATION_GIMBAL")
+        row.prop(settings, "menu_compact", text="Full" if compact else "Compact", toggle=True)
         row.operator("xrwb.command_menu", text="Close", icon="X")
         state = context.window_manager.xr_session_state
         desktop_visible = bool(state and state.editor_surface_info(context)[0])
         op = row.operator("xrwb.editor_surface", text="Close Desktop" if desktop_visible else "Open Desktop",
                           icon="WINDOW")
         op.hide = desktop_visible
-        layout.label(text="Point + trigger, or stick up/down + click.  B: back / close.")
+        _help(layout, "Point + trigger, or stick up/down + click.  B: back / close.")
         active_label = next(label for identifier, label, _description in ALL_TOOLS if identifier == settings.edit_tool)
         layout.label(text=f"Active tool: {active_label}", icon="TOOL_SETTINGS")
-        tabs = layout.grid_flow(columns=5, even_columns=True, align=True)
+        tabs = layout.grid_flow(columns=10 if compact else 5, even_columns=True, align=True)
         for identifier, label, _description in COMMAND_PAGES:
-            tabs.operator("xrwb.command_page", text=label, icon=PAGE_ICONS[identifier],
+            tabs.operator("xrwb.command_page", text="" if compact else label, icon=PAGE_ICONS[identifier],
                           depress=settings.command_page == identifier).page = identifier
         layout.separator()
         if not editing.undo_available(context):
+            # Always above the sections, never folded away.
             layout.label(text="Editing needs Global Undo and at least one undo step.", icon="ERROR")
             row = layout.row(align=True)
             row.prop(context.preferences.edit, "use_global_undo")
             row.prop(context.preferences.edit, "undo_steps")
         page = settings.command_page
-        if page == "CREATE":
-            grid = layout.grid_flow(columns=3, even_columns=True, align=True)
-            for key, (label, icon, _operator, _dimensions) in PRIMITIVES.items():
-                grid.operator("xrwb.add_primitive", text=label, icon=icon).kind = key
-            layout.menu("VIEW3D_MT_add", text="All Blender Add Options", icon="ADD")
+        pinned = pinned_sections() if page != "GUIDE" else []
+        for key in pinned:  # Pinned sections sit under the tabs on every page.
+            section(layout, context, key)
+        if pinned:
             layout.separator()
-            layout.label(text="DRAW A VOLUME — HOLD / SIZE / RELEASE")
-            _tool_buttons(layout, context, DRAW_TOOLS)
-            layout.label(text="Close menu. Start at the controller tip; drag the opposite corner.")
-            layout.label(text="NATIVE BOOLEANS — SELECT TARGET FIRST")
-            layout.prop(settings, "cutter_shape", expand=True)
-            _tool_buttons(layout, context, CUT_TOOLS)
-            reason = _scene_tool_reason(context, "cut_difference")
-            if reason:
-                _label_lines(layout, reason, _CARD_TEXT_WIDTH)
-            row = layout.row(align=True)
-            row.label(text="Combine:")
-            for operation, label, _description in (("UNION", "Union", ""), ("DIFFERENCE", "Subtract", ""),
-                                                   ("INTERSECT", "Intersect", "")):
-                row.operator("xrwb.boolean_selected", text=label).operation = operation
-            row.operator("xrwb.apply_booleans", text="Apply")
-            layout.label(text="Cutters stay editable: grab one to change the result. Target = active.")
-        elif page == "EDIT":
-            _tool_buttons(layout, context, EDIT_TOOLS)
-            _tool_buttons(layout, context, EDGE_TOOLS, columns=2)
-            row = layout.row(align=True)
-            row.operator("xrwb.bevel_object", text="Bevel Object")
-            reason = _scene_tool_reason(context, "select") or _bevel_object_reason(context)
-            if reason:
-                _label_lines(layout, reason, _CARD_TEXT_WIDTH)
-            row = layout.row(align=True)
-            row.prop(settings, "bevel_width_m", text="Object Bevel")
-            row.prop(settings, "bevel_segments", text="Segments")
-            layout.label(text="Edge tools edit the base mesh; Object Bevel works after Boolean modifiers.")
-            layout.prop(settings, "edit_constraint", expand=True)
-            row = layout.row(align=True)
-            row.prop(settings, "translation_snap", text="Move Snap")
-            row.prop(settings, "rotation_snap_degrees", text="Angle Snap")
-            row.prop(settings, "scale_snap", text="Scale Snap")
-            row = layout.row(align=True)
-            row.operator("xrwb.history_undo", text="Undo")
-            row.operator("xrwb.history_redo", text="Redo")
-            row.operator("xrwb.controller_cancel", text="Cancel Edit")
-            row = layout.row(align=True)
-            from . import component_mode
-            mode = component_mode.current_mode(context)
-            for key, label, icon in component_mode.MODES:
-                row.operator("xrwb.component_mode", text=label, icon=icon, depress=mode == key).mode = key
-            row.prop(settings, "multi_select", text="Multi", toggle=True)
-            layout.label(text="Hold trigger / drag / release. Left B or Y cancels.")
-            layout.separator()
-            origin_reason = _scene_tool_reason(context, "select")
-            if not origin_reason and not context.selected_editable_objects:
-                origin_reason = "Select an editable object to set its origin."
-            # The guard replaces the heading so the card height never grows.
-            layout.label(text=wrap(origin_reason, width=_CARD_TEXT_WIDTH, max_lines=1, placeholder="...")[0]
-                         if origin_reason else "OBJECT ORIGIN",
-                         icon="ERROR" if origin_reason else "OBJECT_ORIGIN")
-            origins = layout.column(align=True)
-            origins.enabled = not origin_reason
-            row = origins.row(align=True)
-            row.operator("object.origin_set", text="Origin to Geometry").type = "ORIGIN_GEOMETRY"
-            row.operator("object.origin_set", text="Origin to 3D Cursor").type = "ORIGIN_CURSOR"
-            origins.operator("view3d.snap_cursor_to_selected", text="3D Cursor to Selection")
-        elif page == "SCULPT":
-            layout.label(text="CLAY SCULPT — HOLD / SWEEP / RELEASE")
-            _tool_buttons(layout, context, SCULPT_TOOLS, columns=4)
-            row = layout.row(align=True)
-            row.prop(settings, "sculpt_invert", text="Dig (carve)", toggle=True)
-            row.prop(settings, "sculpt_mirror_x", text="Mirror X", toggle=True)
-            row.prop(settings, "use_pressure", text="Trigger Pressure", toggle=True)
-            row = layout.row(align=True)
-            row.prop(settings, "sculpt_radius_m", text="Brush")
-            row.prop(settings, "sculpt_strength", text="Strength")
-            row = layout.row(align=True)
-            row.operator("xrwb.add_clay", text="Clay Ball", icon="MESH_ICOSPHERE")
-            row.operator("xrwb.remesh_detail", text="Remesh for Detail")
-            row.prop(settings, "remesh_detail_m", text="Detail")
-            layout.label(text="Brush, spray and detail sizes are physical: shrink for finer work.")
-            layout.separator()
-            _size_controls(layout, context)
-            layout.label(text="Native Sculpt Mode brushes stay on the desktop panel (Menus).")
-        elif page == "PAINT":
-            from . import materials_lab
-
-            row = layout.row(align=True)
-            shelf_out = materials_lab.shelf_collection(context) is not None
-            row.operator("xrwb.material_shelf", text="Shelf Away" if shelf_out else "Shelf",
-                         icon="MATERIAL")
-            row.operator("xrwb.show_material_logic", text="Logic", icon="NODETREE")
-            from . import node_garden
-            row.operator("xrwb.node_garden", text="Garden Away" if node_garden.is_out(context) else "Node Garden",
-                         icon="NODE").action = "TOGGLE"
-            row.operator("xrwb.save_material_preset", text="Save Preset", icon="FILE_TICK")
-            grid = layout.grid_flow(columns=4, even_columns=True, align=True)
-            for key, (label, _inputs, _recipe) in materials_lab.PRESETS.items():
-                if key not in materials_lab.UTILITY_PRESETS:
-                    grid.operator("xrwb.pick_material", text=label).identifier = key
-            mine = materials_lab.user_presets()
-            if mine:
-                grid = layout.grid_flow(columns=4, even_columns=True, align=True)
-                for name in mine[:4]:
-                    grid.operator("xrwb.pick_material", text=name, icon="USER").identifier = f"USER:{name}"
-            else:
-                layout.label(text="Node Garden: the real node tree as blocks. Save Preset: for every scene.")
-            _tool_buttons(layout, context, PAINT_TOOLS, columns=1)
-            row = layout.row(align=True)
-            row.label(text=f"Loaded: {settings.spray_material or 'none'}", icon="BRUSH_DATA")
-            row.prop(settings, "spray_radius_m", text="Spray")
-            row.operator("xrwb.apply_material", text="Apply to Selected")
-            layout.prop(context.window_manager.xr_session_settings.shading, "type", expand=True)
-            layout.label(text="Trigger a block to load it; hold trigger on a mesh to spray.")
-        elif page == "ANIMATE":
-            tool_settings = context.scene.tool_settings
-            row = layout.row(align=True)
-            row.operator("xrwb.anim_key", text="Key Selected", icon="KEY_HLT")
-            row.operator("xrwb.anim_key", text="Delete Key", icon="KEY_DEHLT").delete = True
-            row.prop(tool_settings, "use_keyframe_insert_auto", text="Record", toggle=True)
-            row = layout.row(align=True)
-            for label, jump, delta in (("|<", "START", 0), ("< Key", "PREV_KEY", 0), ("-1", "STEP", -1),
-                                       ("+1", "STEP", 1), ("Key >", "NEXT_KEY", 0), (">|", "END", 0)):
-                op = row.operator("xrwb.anim_frame", text=label)
-                op.jump, op.delta = jump, delta
-            row = layout.row(align=True)
-            row.operator("xrwb.anim_play", text="Play / Pause", icon="PLAY")
-            row.prop(context.scene, "frame_current", text="Frame")
-            _tool_buttons(layout, context, ANIMATE_TOOLS, columns=1)
-            row = layout.row(align=True)
-            row.prop(settings, "scrub_frames_per_m", text="Frames / m")
-            row.prop(context.scene, "frame_start", text="Start")
-            row.prop(context.scene, "frame_end", text="End")
-            row = layout.row(align=True)
-            for editor, label in (("DOPESHEET", "Dope Sheet"), ("FCURVES", "Graph"), ("TIMELINE", "Timeline")):
-                row.operator("xrwb.workspace_editor", text=label).editor = editor
-            layout.label(text="Record keys every grip move. Scrub: hold trigger, move sideways.")
+        if page in SECTIONED_PAGES:
+            for key in SECTIONS:
+                if key.startswith(page + ".") and key not in pinned:
+                    section(layout, context, key)
         elif page == "MENUS":
             row = layout.row(align=True)
             row.operator("xrwb.open_hand_menu", text="Studio: every part of Blender  ›",
@@ -1450,8 +1769,8 @@ class XRWB_PT_command_deck(bpy.types.Panel):
             layout.label(text="All panels move as one rig; left stick click shows/closes them.")
         elif page == "CONTROLS":
             layout.prop(settings, "settings_section", expand=True)
-            section = settings.settings_section
-            if section == "FEEL":
+            group = settings.settings_section
+            if group == "FEEL":
                 from . import polish
                 row = layout.row(align=True)
                 current = polish.matching_preset()
@@ -1477,7 +1796,7 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row.prop(settings, "use_pressure", text="Trigger Pressure", toggle=True)
                 row.prop(settings, "multi_select", text="Multi-Select", toggle=True)
                 layout.label(text="Menu size applies when the menu reopens.")
-            elif section == "BUTTONS":
+            elif group == "BUTTONS":
                 layout.prop(settings, "controller_profile")
                 row = layout.row(align=True)
                 row.prop(settings, "left_handed", text="Left-Handed", toggle=True)
@@ -1493,7 +1812,7 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row = layout.row(align=True)
                 row.operator("xrwb.reset_controls", text="Reset Buttons", icon="LOOP_BACK")
                 row.label(text="Profile, hand, sensitivity: next VR start.")
-            elif section == "TOOLS":
+            elif group == "TOOLS":
                 row = layout.row(align=True)
                 row.prop(settings, "wheel_set", text="Wheel")
                 row.prop(settings, "wheel_size_m", text="Size")
@@ -1510,6 +1829,10 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row = layout.row(align=True)
                 row.prop(settings, "sculpt_mirror_x", text="Sculpt Mirror X", toggle=True)
                 row.prop(settings, "use_pressure", text="Trigger Pressure", toggle=True)
+                row = layout.row(align=True)
+                row.prop(settings, "tool_props", text="Tool Props", toggle=True)
+                row.prop(settings, "tool_belt", text="Tool Belt", toggle=True)
+                row.prop(settings, "live_cage", text="Live Cage", toggle=True)
                 layout.label(text="Wheel: stick click, flick toward a tool, click or trigger picks.")
             else:
                 row = layout.row(align=True)
@@ -1906,6 +2229,9 @@ CLASSES = (
     XRWB_OT_reset_controls,
     XRWB_OT_feel_preset,
     XRWB_OT_workflow,
+    XRWB_OT_menu_section,
+    XRWB_OT_live_cage_mode,
+    XRWB_OT_retopo_analyze,
     XRWB_PT_command_deck,
     XRWB_OT_history_undo,
     XRWB_OT_history_redo,
