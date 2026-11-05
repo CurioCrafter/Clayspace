@@ -3,7 +3,7 @@
 Version 0.5.0 adds a five-page command menu, object creation/manipulation,
 movable panel groups and adjustable hold acceleration to the separate full-feature
 source-built 5.1.2 SteamVR/Index route:
-`Open SteamVR Blender Index.cmd`. See `STEAMVR.md` in the extension archive or
+`Open SteamVR Clayspace Index.cmd`. See `STEAMVR.md` in the extension archive or
 [SteamVR setup and controls](steamvr-index-workspace.md) in this workspace.
 Native XR editor/tracking patches are required; the extension ZIP alone does
 not turn stock Blender into this build. The older capability launcher below

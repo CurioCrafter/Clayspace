@@ -65,7 +65,7 @@ if ($AutoStartXR) {
 # Ordinary launches are camera-off even if the separately installed test layer
 # is enabled globally. Consented camera tests use their dedicated probe runner.
 $env:DISABLE_XR_APILAYER_NOVENDOR_steamvr_passthrough = '1'
-$stockBlender = if ($env:VRBLENDER_BLENDER_EXE) { $env:VRBLENDER_BLENDER_EXE } else { 'E:\BlenderBuildsWindows\stable\blender-5.1.2-stable.ec6e62d40fa9\blender.exe' }
+$stockBlender = if ($env:CLAYSPACE_BLENDER_EXE) { $env:CLAYSPACE_BLENDER_EXE } elseif ($env:VRBLENDER_BLENDER_EXE) { $env:VRBLENDER_BLENDER_EXE } else { 'E:\BlenderBuildsWindows\stable\blender-5.1.2-stable.ec6e62d40fa9\blender.exe' }
 $nativeBlender = $null
 $nativeManifestPath = Join-Path $projectRoot 'native\runtime-manifest.json'
 $nativeManifest = $null

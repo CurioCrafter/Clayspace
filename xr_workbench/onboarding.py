@@ -178,7 +178,7 @@ def button_hints(profile: str, hand: str, state: str, tool_label: str = "", hold
 def guide_steps(profile: str) -> list[tuple[str, list[str], str]]:
     """(title, lines, try-it) for each Guide step."""
     return [
-        ("Welcome to VR Blender",
+        ("Welcome to Clayspace",
          ["Menus sit on your left hand. Point the right controller at a",
           "button and pull its trigger (a dot shows where), or use the right",
           "stick: up/down picks, click presses. You feel each press."],

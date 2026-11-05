@@ -8,6 +8,6 @@ echo Cameras and the experimental passthrough layer are OFF for this version.
 echo Text logs are automatic in reports\steamvr-launch; each status log links the full Blender log.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\launch_steamvr_blender.ps1" -Launch -ControllerProfile INDEX
 if errorlevel 1 (
-  echo SteamVR Blender did not finish cleanly. Its error is saved in reports\steamvr-launch.
+  echo SteamVR Clayspace did not finish cleanly. Its error is saved in reports\steamvr-launch.
   timeout /t 15 /nobreak >nul
 )

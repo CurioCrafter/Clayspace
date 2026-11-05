@@ -7,6 +7,6 @@ echo A opens menus. Trigger clicks, grip edits, hold B to move panels. X undo, Y
 echo Redo is in the Edit menu. Logs are saved automatically under reports\steamvr-launch.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\launch_steamvr_blender.ps1" -Launch -ControllerProfile QUEST
 if errorlevel 1 (
-  echo SteamVR Blender did not finish cleanly. Check reports\steamvr-launch.
+  echo SteamVR Clayspace did not finish cleanly. Check reports\steamvr-launch.
   timeout /t 15 /nobreak >nul
 )

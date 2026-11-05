@@ -2,7 +2,7 @@
   <img src="docs/media/hero-vr-to-desktop.png" alt="A Boolean cut made in VR, then the same mesh and its undo history in desktop Blender" width="100%">
 </p>
 
-# VRBlender
+# Clayspace
 
 **Model, sculpt, shade and animate in real Blender, from inside your VR headset.**
 
@@ -12,7 +12,7 @@
 [![Meta Quest 3 via Link](https://img.shields.io/badge/headset-Quest%203%20via%20Link-555)](#hardware-status)
 [![Windows x64](https://img.shields.io/badge/PC-Windows%20x64-555)](#install-in-3-steps)
 
-### [Download VRBlender for Windows](https://github.com/CurioCrafter/VRBlender/releases/latest)
+### [Download Clayspace for Windows](https://github.com/CurioCrafter/Clayspace/releases/latest)
 
 You put the headset on and Blender is there with you. Point at something, pull the
 trigger and hold. A preview shows what you are about to make, and letting go commits
@@ -21,7 +21,7 @@ meshes, modifiers, node trees, keyframes. Take the headset off and the scene is
 already open on your desktop, with your VR edits in the undo history. There is
 nothing to export.
 
-VRBlender is free and open source (GPL). It is a patch to Blender plus an
+Clayspace is free and open source (GPL). It is a patch to Blender plus an
 add-on, and it runs in its own profile, so your normal Blender settings and add-ons
 are left alone.
 
@@ -32,18 +32,18 @@ are left alone.
 ## Install in 3 steps
 
 1. **Download** the zip for one Blender version from the
-   [latest release](https://github.com/CurioCrafter/VRBlender/releases/latest).
-   If you are not sure, take **5.1.2**: it is the version VRBlender is developed and
-   tested on. Each zip is a complete portable Blender with VRBlender already installed.
+   [latest release](https://github.com/CurioCrafter/Clayspace/releases/latest).
+   If you are not sure, take **5.1.2**: it is the version Clayspace is developed and
+   tested on. Each zip is a complete portable Blender with Clayspace already installed.
    `SHA256SUMS.txt` on the release page lets you check the download.
-2. **Extract** it to a folder you own, for example `D:\VRBlender` (not
+2. **Extract** it to a folder you own, for example `D:\Clayspace` (not
    `Program Files`). It needs about 0.7 to 0.9 GB.
 3. **Start SteamVR** and double-click the launcher for your headset:
 
    | Headset | Before you start | Double-click |
    | --- | --- | --- |
-   | **Valve Index** | SteamVR Room Setup done, Direct Display Mode on | `Start VRBlender (Valve Index).cmd` |
-   | **Meta Quest 3** (PC VR) | Connected with Quest Link, Air Link or Steam Link so SteamVR sees it | `Start VRBlender (Quest 3).cmd` |
+   | **Valve Index** | SteamVR Room Setup done, Direct Display Mode on | `Start Clayspace (Valve Index).cmd` |
+   | **Meta Quest 3** (PC VR) | Connected with Quest Link, Air Link or Steam Link so SteamVR sees it | `Start Clayspace (Quest 3).cmd` |
 
 The first time, a short Guide opens on your hand. After that, VR starts with the hand
 menu open and the desktop hidden. Small labels next to each controller always show
@@ -53,9 +53,9 @@ Windows may warn that the launcher comes from an unknown publisher; the files ar
 code-signed. The launcher is a short PowerShell script in the `launcher` folder, and
 you are welcome to read it first. Logs go to `profile\logs`.
 
-Already built Blender yourself? `VRBlender-0.20.0-addon.zip` is the add-on alone
+Already built Blender yourself? `Clayspace-0.20.0-addon.zip` is the add-on alone
 (Edit > Preferences > Get Extensions > Install from Disk). It needs a Blender built
-with the VRBlender patch, see [Build from source](#build-from-source-windows), and it
+with the Clayspace patch, see [Build from source](#build-from-source-windows), and it
 will tell you so if the patch is missing.
 
 ## New in 0.20: 3D tools you hold
@@ -246,14 +246,14 @@ There are good VR creation tools already, and they make different trade-offs:
 
 | | Works on | Data | Price |
 | --- | --- | --- | --- |
-| **VRBlender** | A patched Blender (the release zip includes it), PC VR on Windows | Blender's own scene, modifiers, node trees and undo | Free, GPL-3.0-or-later |
+| **Clayspace** | A patched Blender (the release zip includes it), PC VR on Windows | Blender's own scene, modifiers, node trees and undo | Free, GPL-3.0-or-later |
 | Blender's VR Scene Inspection | Any Blender, built in | Blender's own scene; made for viewing and walking around | Free, part of Blender |
 | Freebird XR | Regular Blender as an add-on, with a quick setup | Blender's own scene | From $15 (pay what you want), free for students |
 | Gravity Sketch, Substance 3D Modeler, Shapelab | Their own apps, several also standalone on Quest | Their own files; export to bring work into Blender | Free to paid, depending on the app |
 
 If you want something that installs into the Blender you already have, Freebird is the
 easier start. If you want to work on Quest without a PC, a standalone app will suit you
-better. VRBlender is for when you want Blender's full toolset in the headset and the
+better. Clayspace is for when you want Blender's full toolset in the headset and the
 result already in your .blend.
 
 ## Build from source (Windows)
@@ -264,8 +264,8 @@ our source and a consolidated patch, not personal add-ons or Blender binaries.
 From a fresh clone:
 
 ```powershell
-git clone https://github.com/CurioCrafter/VRBlender.git
-Set-Location VRBlender
+git clone https://github.com/CurioCrafter/Clayspace.git
+Set-Location Clayspace
 git lfs install
 git clone https://projects.blender.org/blender/blender.git native/blender-5.1.2
 git -C native/blender-5.1.2 checkout --detach ec6e62d40fa9e9d1bea33ad5d00148c99a4f0832
@@ -300,7 +300,7 @@ that source and library folder:
 Blender 4.5 and 5.0 ship OpenXR SDK 1.0.22, which has no hand-tracking data-source
 extension, so native hand tracking stays inactive on those two builds. Blender 4.5
 also has no XR snap-turn or vignette preferences. The add-on accepts Blender 4.5.0
-up to 5.3.0, but it refuses to register on a Blender build that lacks the VRBlender patch.
+up to 5.3.0, but it refuses to register on a Blender build that lacks the Clayspace patch.
 
 Developer checks:
 
@@ -371,7 +371,7 @@ The 0.6 engineering notes, the camera and hand-tracking research launchers and t
 
 Copyright (C) 2026 Andrew Rainsberger.
 
-VRBlender is free software: you can redistribute it and/or modify it under the terms
+Clayspace is free software: you can redistribute it and/or modify it under the terms
 of the [GNU General Public License version 3](LICENSE) or (at your option) any later
 version. It comes with no warranty.
 
@@ -387,6 +387,6 @@ under their own licences and are not included in this repository. The release zi
 include a Blender build; each one's `SOURCE.txt` names the exact upstream commit, patch
 and library commit, and the full source is this repository.
 
-VRBlender is an independent community project. It is not made, endorsed or supported
+Clayspace is an independent community project. It is not made, endorsed or supported
 by the Blender Foundation. Blender is a trademark of the Blender Foundation; Valve
 Index, SteamVR and Meta Quest are trademarks of their owners.

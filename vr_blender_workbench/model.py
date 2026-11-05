@@ -1,4 +1,4 @@
-"""Pure data model and geometry helpers for VR Blender Workbench.
+"""Pure data model and geometry helpers for Clayspace Workbench.
 
 This module deliberately has no ``bpy`` import so its behavior can be tested
 with the system Python as well as Blender's bundled Python.

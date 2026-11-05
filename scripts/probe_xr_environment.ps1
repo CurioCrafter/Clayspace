@@ -121,6 +121,7 @@ if ($cmakeCommand) {
 }
 
 $knownBlenderCandidates = @(
+    $env:CLAYSPACE_BLENDER_EXE,
     $env:VRBLENDER_BLENDER_EXE,
     'E:\BlenderBuildsWindows\stable\blender-5.1.2-stable.ec6e62d40fa9\blender.exe',
     'H:\layeringtextures\.tools\blender-5.1.2-windows-x64\blender.exe'

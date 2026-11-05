@@ -46,7 +46,7 @@ Each run keeps text-only status and error output in
 hand-joint traces are written by the launcher.
 
 Blender VR Workbench is an isolated SteamVR/OpenXR authoring layer for the
-Blender 4.5.11 LTS build (set `VRBLENDER_BLENDER_EXE` to your `blender.exe`). It adds controller-driven
+Blender 4.5.11 LTS build (set `CLAYSPACE_BLENDER_EXE` to your `blender.exe`). It adds controller-driven
 scene work directly in the headset. Blender editors and tools without a native
 adapter remain reachable as a 2D desktop through SteamVR Desktop View.
 
@@ -56,13 +56,13 @@ Blender during XR startup, file reload, or teardown.
 ## Start it
 
 1. Power on the Valve Index headset, Knuckles controllers, and base stations.
-2. Double-click **`Launch VR Blender.cmd`**. The launcher starts SteamVR when
+2. Double-click **`Launch Clayspace.cmd`**. The launcher starts SteamVR when
    needed; wait until its headset and both controller indicators are green.
 
 The launcher uses the byte-verified Blender 4.5.11 LTS build and stores its
 preferences under `.vr_profile`. It does not enable, disable, or
 overwrite add-ons in the normal Blender profile. If you want to configure the
-desktop panel before opening OpenXR, use **`Launch VR Blender Safe.cmd`**, then
+desktop panel before opening OpenXR, use **`Launch Clayspace Safe.cmd`**, then
 choose **3D View > Sidebar > VR Workbench > Start VR Workbench**.
 
 SteamVR is already registered as Windows' active OpenXR runtime. If Blender
@@ -163,7 +163,7 @@ launchers load the workspace source directly into their isolated profile.
 ```powershell
 python -m unittest discover -s tests -v
 python -m compileall vr_blender_workbench tests scripts
-& $env:VRBLENDER_BLENDER_EXE --background --factory-startup --python scripts\blender_smoke.py
+& $env:CLAYSPACE_BLENDER_EXE --background --factory-startup --python scripts\blender_smoke.py
 python scripts\build_package.py
 ```
 

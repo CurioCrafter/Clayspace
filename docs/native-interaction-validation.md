@@ -102,7 +102,7 @@ XR patch. Optional personal add-ons are separate compatibility, not dependencies
 
 ## Installed build and rollback
 
-After the user saved and closed VR Blender, the compiled exact-hand-anchor and
+After the user saved and closed Clayspace, the compiled exact-hand-anchor and
 Python draw-context fixes were installed as `native/build-features/bin/blender.exe`.
 Final native-tools SHA256: `803511D9F855D97EC7DF16C500B9C104DF050C6CCA46697E69AD9F3CBAC80EC0`.
 The previous executable is retained as

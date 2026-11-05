@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "vr_blender_workbench"
 DIST = ROOT / "dist"
 VERSION = "0.1.1"
-PACKAGE = DIST / f"vr-blender-workbench-{VERSION}.zip"
+PACKAGE = DIST / f"clayspace-legacy-workbench-{VERSION}.zip"
 
 PACKAGE_FILES = (
     "__init__.py",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 bl_info = {
-    "name": "Blender VR Workbench",
+    "name": "Clayspace Legacy Workbench",
     "author": "Andrew Rainsberger (TideFront Studio)",
     "version": (0, 1, 1),
     "blender": (4, 5, 0),
