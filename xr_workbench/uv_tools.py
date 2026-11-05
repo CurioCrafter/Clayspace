@@ -9,12 +9,14 @@ with Blender's own unwrapper, as one undo step. Everything else is untouched.
 from __future__ import annotations
 
 import math
+import time
 
 import bmesh
 import bpy
+import numpy as np
 from mathutils import Vector
 
-from . import editing, physical_tools, viewer_scale
+from . import editing, physical_tools, sculpt_math, viewer_scale
 from .interaction import CapturePhase, Decision, EditResult
 
 
@@ -150,15 +152,162 @@ def unwrap_faces(context, obj, faces, seams, method="ANGLE_BASED"):
     view_layer.objects.active = previous_active
 
 
-def begin(context, pose, owner, generation):
+SEAM_STEP_M = 0.005  # Scissors add a seam segment every 5 mm of tip path (physical).
+SEAM_MAX_EDGES = 64  # Longest shortest-path per segment.
+SNIP_PULSE_S = 0.08  # The blades close and open again over 80 ms on every snip.
+
+
+class SeamCutStroke(physical_tools._Stroke):
+    """Scissors in contact mode: the swipe path becomes seams, live. Release unwraps what they cut.
+
+    Every SEAM_STEP_M of tip path along the surface adds the shortest edge path (Dijkstra, at most
+    SEAM_MAX_EDGES edges) from the previous nearest vertex to the current one. Only edges that were not
+    seams are recorded, so cancel puts exactly the old seams back. One undo step "XR Cut Seams".
+    ponytail: nearest vertex to the tip, so a swipe snaps to mesh edges (like a seam tool should); a path
+    that has to jump more than 64 edges is skipped. Upgrade: bridge the gap in several shorter paths.
+    """
+
+    label = "Cut Seams"
+
+    def __init__(self, context, pose, obj, point, owner, generation, units, settings):
+        super().__init__(context, pose, owner, generation, units)
+        self.contact_mode = True
+        physical_tools.require_mesh_target(context, obj, "Cut seams")
+        if any(m.show_viewport for m in obj.modifiers):
+            raise editing.EditRejected("Cut seams on the base mesh: hide viewport modifiers first")
+        self.obj = obj
+        self.mesh = obj.data
+        self.unwrap = bool(physical_tools._opt(settings, "uv_seam_unwrap", True))
+        self.bm = bmesh.new()
+        self.bm.from_mesh(self.mesh)
+        self.bm.verts.ensure_lookup_table()
+        self.bm.edges.ensure_lookup_table()
+        self.bm.faces.ensure_lookup_table()
+        world = np.array(obj.matrix_world, dtype=np.float64)
+        flat = np.empty(len(self.mesh.vertices) * 3, dtype=np.float32)
+        self.mesh.attributes["position"].data.foreach_get("vector", flat)
+        self.points = flat.reshape(-1, 3).astype(np.float64) @ world[:3, :3].T + world[:3, 3]
+        self.chunks = sculpt_math.Chunks(self.points)
+        self.new_edges = []  # Edge indices this stroke turned into seams, in order.
+        self.lines = []
+        self.snip_at = -1.0
+        self.pressure_in = 1.0
+        self.prev = self._nearest(np.array(point))
+        if self.prev is None:
+            self.bm.free()
+            self.bm = None
+            raise editing.EditRejected("Touch the mesh with the scissors to start a seam")
+        self.last_point = Vector(point)
+
+    @property
+    def pressure(self):
+        """Blade closure 0..1 for the prop: pulsed 0 -> 1 -> 0 over 80 ms by each snip."""
+        t = (time.monotonic() - self.snip_at) / SNIP_PULSE_S
+        return math.sin(math.pi * t) if 0.0 <= t <= 1.0 else 0.0
+
+    @pressure.setter
+    def pressure(self, value):
+        self.pressure_in = value  # The trigger only engages the blades; their motion is the snip.
+
+    def _nearest(self, at):
+        for reach in (0.02, 0.06, 0.15):
+            ids = self.chunks.candidates(at, reach * self.units)
+            if ids.size:
+                d = np.linalg.norm(self.points[ids] - at, axis=1)
+                best = int(np.argmin(d))
+                if d[best] <= reach * self.units:
+                    return int(ids[best])
+        return None
+
+    def _neighbours(self, v):
+        vert = self.bm.verts[v]
+        for edge in vert.link_edges:
+            yield edge.other_vert(vert).index, edge.index, edge.calc_length()
+
+    def _valid(self, context):
+        try:
+            return (super()._valid(context) and self.obj.name in context.view_layer.objects
+                    and len(self.mesh.vertices) == len(self.bm.verts))
+        except (ReferenceError, AttributeError):
+            return False
+
+    def _restore(self, context):
+        for index in self.new_edges:
+            self.mesh.edges[index].use_seam = False
+        self.new_edges = []
+        self.lines = []
+        self.mesh.update()
+
+    def _finish(self, phase):
+        super()._finish(phase)
+        if self.bm is not None:
+            self.bm.free()
+            self.bm = None
+
+    def _apply(self, context, pose):
+        found = physical_tools.current_contact(self.hand)
+        if found is None or found.obj_name != self.obj.name:
+            return "Scissors are off the surface"
+        point = Vector(found.point)
+        if (point - self.last_point).length < SEAM_STEP_M * self.units:
+            return f"Seams: {len(self.new_edges)} edges"
+        vertex = self._nearest(np.array(point))
+        self.last_point = point
+        if vertex is None or vertex == self.prev:
+            return f"Seams: {len(self.new_edges)} edges"
+        path = sculpt_math.shortest_path(self._neighbours, self.prev, vertex, SEAM_MAX_EDGES)
+        if path is not None:
+            self.prev = vertex
+        added = [index for index in (path or []) if not self.mesh.edges[index].use_seam]
+        world = self.obj.matrix_world
+        for index in added:
+            self.mesh.edges[index].use_seam = True
+            self.bm.edges[index].seam = True
+            a, b = (world @ v.co for v in self.bm.edges[index].verts)
+            self.lines += [tuple(a), tuple(b)]
+        if added:
+            self.new_edges += added
+            self.changed = True
+            self.snip_at = time.monotonic()
+            self._fx("snip")
+            self.mesh.update()
+        return f"Seams: {len(self.new_edges)} edges"
+
+    def commit(self, context, owner=None):
+        editing._require_main_thread()
+        if (self.new_edges and self.unwrap and editing.active_transaction() is self and not self.finished
+                and self._valid(context)):
+            faces = set()
+            for index in self.new_edges:
+                for face in self.bm.edges[index].link_faces:
+                    faces |= region_faces(self.bm, face.index, 180.0)  # Seams stop the flood.
+            try:
+                unwrap_faces(context, self.obj, faces, self.new_edges)
+            except (editing.EditRejected, RuntimeError) as exc:
+                if context.mode != "OBJECT":
+                    bpy.ops.object.mode_set(mode="OBJECT")
+                self._restore(context)
+                self._finish(CapturePhase.CANCELLED)
+                return EditResult(Decision.REJECTED, f"Unwrap failed: {exc}")
+        return super().commit(context, owner)
+
+    def commit_message(self):
+        return f"Cut {len(self.new_edges)} seam edges" + (" and unwrapped them" if self.unwrap else "")
+
+
+def begin(context, pose, owner, generation, contact=None):
     units = viewer_scale.world_units_per_metre(context)
+    settings = context.window_manager.xrwb_settings
+    if contact is not None:
+        obj = bpy.data.objects.get(contact.obj_name)
+        if obj is not None:  # Touching: the scissors cut seams along the swipe.
+            return SeamCutStroke(context, pose, obj, contact.point, owner, generation, units, settings)
     origin, direction, _rotation = physical_tools._pose_ray(pose)
     context.view_layer.update()
     hit, _location, _normal, index, evaluated, _matrix = context.scene.ray_cast(
         context.evaluated_depsgraph_get(), origin, direction)
     if not hit or evaluated is None:
         raise editing.EditRejected("Point at a face to start an island")
-    settings = context.window_manager.xrwb_settings
     return UVIslandStroke(context, pose, evaluated.original, index, owner, generation, units, settings)
 
 

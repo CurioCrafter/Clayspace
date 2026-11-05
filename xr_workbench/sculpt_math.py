@@ -67,6 +67,25 @@ class Chunks:
         return ids[ids < self.count]
 
 
+def _spans(self, centre, radius):
+    """(start, stop) index runs of the chunks the sphere touches, adjacent chunks merged.
+
+    Cheaper than `candidates` when the caller can work on contiguous slices (no index array, no gather).
+    """
+    hit = np.flatnonzero(np.all((self.lo - radius <= centre) & (centre <= self.hi + radius), axis=1))
+    spans = []
+    for k in hit:
+        start, stop = int(k) * self.size, min(self.count, (int(k) + 1) * self.size)
+        if spans and spans[-1][1] == start:
+            spans[-1] = (spans[-1][0], stop)
+        else:
+            spans.append((start, stop))
+    return spans
+
+
+Chunks.spans = _spans
+
+
 def brush_copies(world, inverse, mirror_x, radial):
     """World-space 4x4 transforms of every brush copy (first is the identity).
 
@@ -130,3 +149,103 @@ def smooth_average(points, ids, edges):
     has = count > 0
     average[has] = total[has] / count[has, None]
     return average
+
+
+# ---- 0.21 touch tools: pure helpers -------------------------------------------------------
+
+PRESS_BUILD_MPS = 0.02  # Clay/Inflate pressed and held still build at 2 cm/s (physical) at full pressure and strength.
+
+
+def press_floor(dt, units):
+    """The `step` floor for Clay/Inflate when the hand holds still while pressed (world units)."""
+    return max(0.0, float(dt)) * PRESS_BUILD_MPS * units
+
+
+def smooth_speed_factor(speed, radius_per_s):
+    """Smooth rubs harder the faster you rub: 0.5 at rest up to 1.0 at `radius_per_s` (units per second)."""
+    return 0.5 + 0.5 * min(1.0, max(0.0, speed) / max(radius_per_s, 1.0e-12))
+
+
+def cone_directions(direction, half_angle, count=12, phase=0.0):
+    """`count` unit rays spread over a disc inside a cone around `direction` (sunflower pattern).
+
+    `phase` rotates the pattern, so successive frames cover the gaps between rays.
+    """
+    d = np.asarray(direction, dtype=np.float64)
+    d = d / max(np.linalg.norm(d), 1.0e-12)
+    helper = np.array((0.0, 0.0, 1.0)) if abs(d[2]) < 0.9 else np.array((1.0, 0.0, 0.0))
+    u = np.cross(d, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(d, u)
+    k = np.arange(count)
+    angle = half_angle * np.sqrt((k + 0.5) / count)
+    turn = k * 2.399963229728653 + phase  # Golden angle.
+    side = np.cos(turn)[:, None] * u + np.sin(turn)[:, None] * v
+    return np.cos(angle)[:, None] * d + np.sin(angle)[:, None] * side
+
+
+def spray_spot(distance, half_angle, min_distance):
+    """Radius of the cone's cross-section at `distance` (never smaller than at `min_distance`)."""
+    return max(distance, min_distance) * math.tan(half_angle)
+
+
+def edge_soft(t):
+    """Smoothstep 0..1: a stamp's wall softens over the first tenth of its size."""
+    t = np.clip(t, 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def stamp_footprint(kind, xy, half, inner=0.0):
+    """Signed distance to a stamp footprint's edge, positive inside. `xy` is (n, 2) in the stamp's frame.
+
+    kind: SQUARE (half = (hx, hy)), CIRCLE (radius half[0]) or RING (outer half[0], inner = fraction of it).
+    """
+    xy = np.asarray(xy, dtype=np.float64)
+    if kind == "SQUARE":
+        return np.minimum(half[0] - np.abs(xy[:, 0]), half[1] - np.abs(xy[:, 1]))
+    radius = np.hypot(xy[:, 0], xy[:, 1])
+    if kind == "RING":
+        return np.minimum(half[0] - radius, radius - half[0] * inner)
+    return half[0] - radius
+
+
+def extract_thickness_mm(start_mm, along_m):
+    """Mask Extract: 1 cm of hand away from the surface adds 1 mm of shell; whole mm, 0.5..50."""
+    mm = round(start_mm + along_m * 100.0)
+    return max(0.5, min(50.0, float(mm)))
+
+
+def shortest_path(neighbours, start, goal, max_edges=64, max_visits=6000):
+    """Dijkstra over a mesh graph. `neighbours(v)` yields (other vertex, edge id, length).
+
+    Returns the edge ids from start to goal, or None when goal is more than `max_edges` edges away or
+    the search ran past `max_visits` vertices (a long jump across the mesh).
+    """
+    import heapq
+
+    if start == goal:
+        return []
+    best = {start: 0.0}
+    came = {}
+    heap = [(0.0, 0, start)]
+    visits = 0
+    while heap:
+        cost, hops, v = heapq.heappop(heap)
+        if v == goal:
+            path = []
+            while v != start:
+                v, edge = came[v]
+                path.append(edge)
+            return path[::-1]
+        if cost > best.get(v, float("inf")) or hops >= max_edges:
+            continue
+        visits += 1
+        if visits > max_visits:
+            return None
+        for other, edge, length in neighbours(v):
+            total = cost + length
+            if total < best.get(other, float("inf")):
+                best[other] = total
+                came[other] = (v, edge)
+                heapq.heappush(heap, (total, hops + 1, other))
+    return None

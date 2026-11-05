@@ -10,7 +10,13 @@ ray, +Y is up, metres. ``tip_offset(prop)`` is where the working tip sits in
 that frame; ``draw`` puts that tip exactly on ``matrix``'s origin.
 
 Parts: 0 handle, 1 body (fixed colours stored per prop), 2 accent (the
-theme's ACCENT, so props follow the theme). Lighting is plain per-vertex
+theme's ACCENT, so props follow the theme). Some props mark the vertices
+that spin (the drill's chuck and bit); props without a mask spin whole.
+
+Contact: ``collider(prop) -> (radius_m, shaft_m, axis, feel)``. The tip sphere
+sits on the tip. With axis "Z" the shaft is a capsule from the tip back along
++Z (toward the handle); with axis "X" (the rolling pin) it is centred on the
+tip and runs shaft_m / 2 each way along the prop's X. Lighting is plain per-vertex
 lambert with a key light fixed to the viewer, computed in numpy, so the
 builtin SMOOTH_COLOR shader works on every backend with no custom GLSL.
 """
@@ -32,6 +38,10 @@ KEY_LIGHT = (-0.35, 0.6, 0.72)  # View space, toward the light: above-left of yo
 FILL_LIGHT = (0.4, -0.5, 0.3)
 AMBIENT = 0.3
 
+DEFAULT_COLLIDER = (0.006, 0.0, "Z", "HARD")
+FEELS = ("CLAY", "HARD", "CUT", "SOFT")
+MAX_SQUASH = 0.5  # Past this the squash would flatten the prop to nothing.
+
 _props: dict | None = None
 _batches: dict = {}
 _switch: dict = {}  # hand -> (prop, time it was switched to)
@@ -44,15 +54,25 @@ def _load() -> dict:
         with np.load(ASSET) as data:
             for prop in (str(i) for i in data["ids"]):
                 handle, body = data[f"{prop}__colours"]
+                idx = data[f"{prop}__idx"].astype(np.int32)
+                collider = DEFAULT_COLLIDER
+                if f"{prop}__collider" in data.files:
+                    radius, shaft = (float(v) for v in data[f"{prop}__collider"])
+                    collider = (radius, shaft, str(data[f"{prop}__axis"]), str(data[f"{prop}__feel"]))
+                spin = data[f"{prop}__spin"].astype(bool) if f"{prop}__spin" in data.files else None
                 props[prop] = {
                     "pos": data[f"{prop}__pos"].astype(np.float32),
                     "nrm": data[f"{prop}__nrm"].astype(np.float32),
                     "part": data[f"{prop}__part"],
                     "sqz": data[f"{prop}__sqz"].astype(np.float32),
-                    "idx": data[f"{prop}__idx"].astype(np.int32),
+                    "idx": idx,
                     "tip": tuple(float(v) for v in data[f"{prop}__tip"]),
                     "colours": (tuple(handle), tuple(body)),
+                    "collider": collider,
                 }
+                if spin is not None:  # Split the triangles: the fixed part and the part that spins.
+                    turning = spin[idx].all(axis=1)
+                    props[prop]["fixed_idx"], props[prop]["spin_idx"] = idx[~turning], idx[turning]
         _props = props
     return _props
 
@@ -70,6 +90,21 @@ def prop_for(tool: str) -> str | None:
 def tip_offset(prop: str) -> tuple:
     """Working tip in the prop-local frame (metres)."""
     return _load()[prop]["tip"]
+
+
+def collider(prop_id: str) -> tuple:
+    """(radius_m, shaft_m, axis, feel) of a prop or tool id; DEFAULT_COLLIDER when unknown."""
+    prop = prop_for(prop_id)
+    return DEFAULT_COLLIDER if prop is None else _load()[prop]["collider"]
+
+
+def squash_matrix(normal_local, amount: float) -> np.ndarray:
+    """3x3 squash about the tip: shrink along the contact normal, bulge half as much across it."""
+    n = _unit(normal_local).astype(np.float64)
+    a = float(max(0.0, min(MAX_SQUASH, amount)))
+    along = np.outer(n, n)
+    eye = np.eye(3)
+    return eye - a * along + 0.5 * a * (eye - along)
 
 
 def bounds(prop: str) -> tuple:
@@ -113,21 +148,50 @@ def _accent(theme):
     return tuple(theme)[:3]  # An explicit colour, e.g. the vertex-paint colour.
 
 
-def _motion(prop: str, now: float, hand: str):
-    """Sway after a tool switch, and the helix spin, about the prop's own origin."""
+def _sway(prop: str, now: float, hand: str):
+    """Sway after a tool switch, about the prop's own origin."""
     from mathutils import Matrix
     if _switch.get(hand, ("",))[0] != prop:
         _switch[hand] = (prop, now)
     t = now - _switch[hand][1]
-    matrix = Matrix.Identity(4)
     if t < SWAY_SECONDS:
-        matrix = Matrix.Rotation(0.3 * math.exp(-6.0 * t) * math.sin(t * 22.0), 4, "X")
-    if prop in SPIN:
-        matrix = matrix @ Matrix.Rotation(now * SPIN[prop], 4, "Z")
+        return Matrix.Rotation(0.3 * math.exp(-6.0 * t) * math.sin(t * 22.0), 4, "X")
+    return Matrix.Identity(4)
+
+
+def _motion(prop: str, now: float, hand: str, spin=None):
+    """Sway, plus the spin when the whole prop turns (no spin mask)."""
+    from mathutils import Matrix
+    matrix = _sway(prop, now, hand)
+    rate = SPIN.get(prop, 0.0) if spin is None else float(spin)
+    if rate and "spin_idx" not in _load()[prop]:
+        matrix = matrix @ Matrix.Rotation(now * rate, 4, "Z")
     return matrix
 
 
-def _batch(prop, model, accent, squeeze):
+def models(prop: str, matrix, now: float, hand: str = "", squash=None, spin=None, offset=None) -> list:
+    """[(subset, model matrix)] to draw: subset is "all", or "fixed" and "spin" for a masked prop.
+
+    Pure mathutils (no gpu), so the headless smoke checks it. The tip lands on
+    ``matrix``'s origin plus ``offset``; the squash scales about that tip.
+    """
+    from mathutils import Matrix, Vector
+    aim = Matrix(matrix)
+    if offset is not None:
+        aim = Matrix.Translation(Vector(offset)) @ aim
+    if squash is not None and squash[1] > 0.0:
+        normal_local = aim.to_3x3().normalized().inverted_safe() @ Vector(squash[0])
+        aim = aim @ Matrix(squash_matrix(normal_local, squash[1]).tolist()).to_4x4()
+    tip = tip_offset(prop)
+    model = aim @ Matrix.Translation((-tip[0], -tip[1], -tip[2])) @ _motion(prop, now, hand, spin)
+    rate = SPIN.get(prop, 0.0) if spin is None else float(spin)
+    if rate and "spin_idx" in _load()[prop]:
+        # ponytail: angle = now * rate, so a changed rate jumps the phase; integrate per hand if it shows.
+        return [("fixed", model), ("spin", model @ Matrix.Rotation(now * rate, 4, "Z"))]
+    return [("all", model)]
+
+
+def _batch(prop, model, accent, squeeze, subset="all"):
     """Cached batch; rebuilt only when the light direction, squeeze or accent really changes."""
     import gpu
     from gpu_extras.batch import batch_for_shader
@@ -137,7 +201,7 @@ def _batch(prop, model, accent, squeeze):
     fill_local = inverse @ _vec(FILL_LIGHT)
     # ponytail: CPU lighting rebuilds the batch while the hand turns (~0.3 ms for 2k tris);
     # a small GLSL lit shader would make it free if the frame budget ever needs it.
-    key = (prop, tuple(round(v, 1) for v in _unit(key_local)), tuple(round(v, 1) for v in _unit(fill_local)),
+    key = (prop, subset, tuple(round(v, 1) for v in _unit(key_local)), tuple(round(v, 1) for v in _unit(fill_local)),
            round(squeeze, 2), tuple(round(c, 3) for c in accent))
     batch = _batches.get(key)
     if batch is None:
@@ -146,8 +210,11 @@ def _batch(prop, model, accent, squeeze):
         shader = gpu.shader.from_builtin("SMOOTH_COLOR")
         pos, colours = shade(prop, key_local, fill_local, accent, squeeze)
         batch = _batches[key] = batch_for_shader(shader, "TRIS", {"pos": pos, "color": colours},
-                                                 indices=_load()[prop]["idx"])
+                                                 indices=_load()[prop][INDICES[subset]])
     return batch
+
+
+INDICES = {"all": "idx", "fixed": "fixed_idx", "spin": "spin_idx"}
 
 
 def _vec(v):
@@ -155,14 +222,14 @@ def _vec(v):
     return Vector(v).normalized()
 
 
-def _draw_model(prop, model, accent, squeeze):
+def _draw_model(prop, model, accent, squeeze, subset="all"):
     import gpu
     previous = gpu.state.depth_test_get(), gpu.state.depth_mask_get(), gpu.state.blend_get()
     try:
         gpu.state.depth_test_set("LESS_EQUAL")
         gpu.state.depth_mask_set(True)
         gpu.state.blend_set("NONE")
-        batch = _batch(prop, model, accent, squeeze)
+        batch = _batch(prop, model, accent, squeeze, subset)
         with gpu.matrix.push_pop():
             gpu.matrix.multiply_matrix(model)
             batch.draw(gpu.shader.from_builtin("SMOOTH_COLOR"))
@@ -172,24 +239,25 @@ def _draw_model(prop, model, accent, squeeze):
         gpu.state.blend_set(previous[2])
 
 
-def draw(context, prop_id, matrix, squeeze=0.0, theme=None, hand="") -> bool:
+def draw(context, prop_id, matrix, squeeze=0.0, theme=None, hand="", squash=None, spin=None, offset=None) -> bool:
     """Draw a prop with its tip on ``matrix``'s origin (call inside the XR POST_VIEW callback).
 
     ``prop_id`` may be a tool id (aliases resolve). ``matrix`` is the aim pose,
     scaled by world units per metre. ``squeeze`` is the trigger value 0..1.
     ``theme`` is a polish theme key, an RGB accent, or None for the live theme.
     ``hand`` keeps each hand's switch sway apart (the off hand may show the Live Cage glove).
+    ``squash`` is (normal_world, amount 0..0.5) from feel.squash_for: scales about the tip.
+    ``spin`` (rad/s) overrides SPIN for this draw (the drill while boring).
+    ``offset`` is a world translation added first (contact.pushed_offset).
     ``context`` is unused (XR draw has no usable bContext); kept for the call shape.
     Returns False when there is no prop for this id.
     """
-    from mathutils import Matrix
     prop = prop_for(prop_id)
     if prop is None:
         return False
-    tip = tip_offset(prop)
-    model = Matrix(matrix) @ Matrix.Translation((-tip[0], -tip[1], -tip[2]))
-    model = model @ _motion(prop, monotonic(), hand)
-    _draw_model(prop, model, _accent(theme), float(squeeze))
+    accent = _accent(theme)
+    for subset, model in models(prop, matrix, monotonic(), hand, squash, spin, offset):
+        _draw_model(prop, model, accent, float(squeeze), subset)
     return True
 
 

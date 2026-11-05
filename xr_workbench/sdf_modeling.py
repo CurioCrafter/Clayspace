@@ -5,8 +5,9 @@ with no add-on needed. Every blob adds to a field and the surface is where
 the field crosses a threshold, so blobs melt into each other smoothly.
 Carve blobs subtract, which acts like a smooth boolean.
 
-* SDF Blobs tool: hold the trigger. A blob appears at the pen tip, 20 cm in
-  front of the controller, and follows it. In Trail mode, moving leaves a
+* SDF Blobs tool: hold the trigger. A blob appears at the pen tip (the prop's
+  tip with Tool Props on, else 20 cm in front of the controller; touching a mesh
+  puts it on the contact point) and follows it. In Trail mode, moving leaves a
   string of blobs, like drawing with clay. A harder squeeze makes bigger
   blobs. Capsules and ellipsoids turn with your hand.
 * Trigger on an existing blob grabs it: move it and everything re-melts live.
@@ -29,8 +30,19 @@ SHAPES = (("BALL", "Ball", "MESH_UVSPHERE"), ("CAPSULE", "Capsule", "MESH_CAPSUL
           ("ELLIPSOID", "Ellipsoid", "MESH_UVSPHERE"), ("CUBE", "Rounded Cube", "MESH_CUBE"))
 MODES = (("TRAIL", "Trail", "Moving leaves a string of blobs, like drawing with clay"),
          ("PLACE", "Place", "One blob follows the pen tip; release places it"))
-PEN_TIP_M = 0.2
+PEN_TIP_FAR_M = 0.2
 TRAIL_SPACING = 0.6  # Fraction of the radius between trail blobs.
+
+
+def pen_tip_m() -> float:
+    from . import creative_tools
+    return creative_tools.pen_tip_m()
+
+
+def __getattr__(name):
+    if name == "PEN_TIP_M":
+        return pen_tip_m()
+    raise AttributeError(name)
 
 
 def _log(context, message, level="INFO"):
@@ -92,8 +104,9 @@ class SdfStroke(physical_tools._Stroke):
 
     label = "SDF"
 
-    def __init__(self, context, pose, owner, generation, units, settings):
+    def __init__(self, context, pose, owner, generation, units, settings, contact=None):
         super().__init__(context, pose, owner, generation, units)
+        self.contact_mode = contact is not None
         if context.collection is None or not context.collection.is_editable:
             raise editing.EditRejected("Choose a local editable collection first")
         self.selection = editing._selection_snapshot(context)
@@ -130,8 +143,12 @@ class SdfStroke(physical_tools._Stroke):
         self.changed = True
 
     def _tip(self, pose):
+        """The tip; touching a mesh, the blob's centre sits on the contact point."""
+        found = physical_tools.current_contact(self.hand) if self.contact_mode else None
+        if found is not None:
+            return Vector(found.point)
         origin, direction, _rotation = physical_tools._pose_ray(pose)
-        return origin + direction * PEN_TIP_M * self.units
+        return origin + direction * pen_tip_m() * self.units
 
     def radius(self):
         return self.base_radius * (0.5 + 0.5 * self.pressure)
@@ -143,6 +160,7 @@ class SdfStroke(physical_tools._Stroke):
         element.stiffness = self.blend
         self._place(element, tip, rotation)  # Again: the radius depends on the stiffness just set.
         self.added.append(element)
+        self._fx("touch")  # The squish of clay going on.
         return element
 
     def _place(self, element, tip, rotation):
@@ -208,11 +226,12 @@ class SdfStroke(physical_tools._Stroke):
         return f"{len(self.added)} {'carving' if self.carve else ''} blob(s) added (one undo)".replace("  ", " ")
 
 
-def begin(context, pose, owner, generation):
+def begin(context, pose, owner, generation, contact=None):
     if context.mode != "OBJECT":
         raise editing.EditRejected("Switch to Object Mode for SDF blobs")
     settings = context.window_manager.xrwb_settings
-    stroke = SdfStroke(context, pose, owner, generation, viewer_scale.world_units_per_metre(context), settings)
+    stroke = SdfStroke(context, pose, owner, generation, viewer_scale.world_units_per_metre(context), settings,
+                       contact=contact)
     editing._ACTIVE_TRANSACTION = stroke
     return stroke
 

@@ -33,7 +33,10 @@ WHEELS = {
     "LAB": (("tool", "sculpt_mask", "Mask"), ("tool", "lab_dial", "Lab Dial"),
             ("tool", "grow_seed", "Grow"), ("tool", "retopo_loom", "Retopo"),
             ("menu", "XRWB_MT_lab", "Lab ›"), ("menu", "XRWB_MT_growth", "Growth ›"),
-            ("op", ("xrwb.mask_extract", {}), "Extract"), MORE),
+            ("tool", "mask_extract", "Extract"), MORE),
+    "WORKSHOP": (("tool", "knife", "Knife"), ("tool", "mallet", "Mallet"), ("tool", "chisel", "Chisel"),
+                 ("tool", "rake", "Rake"), ("tool", "sandpaper", "Sandpaper"), ("tool", "rolling_pin", "Rolling Pin"),
+                 ("tool", "drill", "Drill"), ("tool", "clay_gun", "Clay Gun"), MORE),
     "SHADE": (("tool", "spray_material", "Spray"), ("tool", "eyedropper", "Eyedropper"),
               ("tool", "uv_island", "UV Island"), ("op", ("xrwb.material_shelf", {}), "Shelf"),
               ("op", ("xrwb.node_garden", {"action": "TOGGLE"}), "Node Garden"),
@@ -60,6 +63,7 @@ WHEEL_SETS = (("AUTO", "Follow Workflow", "Wedges for the current workflow"),
               ("MODEL", "Modeling", "Extrude, inset, bevel, cut"),
               ("SCULPT", "Sculpting", "Clay brushes and symmetry"),
               ("LAB", "Sculpt Lab", "Mask, Subdivision Lab, Growth and Retopo"),
+              ("WORKSHOP", "Workshop", "Hands-on carving, cutting and shaping tools"),
               ("SHADE", "Shading", "Spray, UVs, materials, nodes"),
               ("ANIMATE", "Animation", "Keys, playback and scrubbing"),
               ("STAGE", "Stage", "Lights, camera, render, pen"))
@@ -79,7 +83,13 @@ def items_for(settings) -> tuple:
     chosen = str(getattr(settings, "wheel_set", "AUTO"))
     if chosen == "AUTO":
         chosen = str(getattr(settings, "workflow", "MODEL"))
+        if chosen == "SCULPT" and str(getattr(settings, "edit_tool", "")) in workshop_tools():
+            chosen = "WORKSHOP"  # Holding a workshop tool: its siblings are one flick away.
     return WHEELS.get(chosen, WHEELS["MODEL"])
+
+
+def workshop_tools() -> set:
+    return {value for kind, value, _label in WHEELS["WORKSHOP"] if kind == "tool"}
 
 
 def open_wheel(context, hand: str, position, viewer_rotation, units: float) -> str:

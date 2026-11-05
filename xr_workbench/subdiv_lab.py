@@ -440,6 +440,23 @@ def bake(context):
     return f"{name} baked: it is now real geometry"
 
 
+SPIN_BASE_RAD_S = 1.6  # The Lab Dial prop's helix turns 1.6 rad/s plus the same again per subdivision level.
+
+
+def dial_spin(level) -> float:
+    """Helix spin (rad/s) for the dial prop at a Levels value."""
+    return SPIN_BASE_RAD_S * (1.0 + max(0.0, float(level)))
+
+
+def spin_for(obj) -> float:
+    """dial_spin for an object's Lab modifier (its Levels input), 1.6 when there is none."""
+    try:
+        mod = lab_modifier(obj) if obj is not None else None
+        return dial_spin(get_input(mod, "Levels")) if mod is not None else dial_spin(0)
+    except Exception:
+        return dial_spin(0)
+
+
 def _detent_value(start, steps, step, low, high, is_int):
     value = min(max(start + steps * step, low), high)
     return int(round(value)) if is_int else value
@@ -524,7 +541,17 @@ def _make_dial_class():  # Lazy: physical_tools imports a lot and must not be ne
             if self.pulse:
                 set_inputs(obj, mod, values)
                 self.changed = True
+                self._fx("detent")  # A haptic tick and a click per detent.
+                self._fx("click")
             return self.readout() + note
+
+        @property
+        def spin(self):
+            """Helix spin for the dial prop (rad/s): faster at higher levels."""
+            try:
+                return spin_for(self._target()[0])
+            except (KeyError, ReferenceError):
+                return dial_spin(0)
 
         def commit_message(self):
             return f"{self.label}: {self.readout()}"
@@ -535,13 +562,15 @@ def _make_dial_class():  # Lazy: physical_tools imports a lot and must not be ne
 _DIAL_CLASS = None
 
 
-def begin(context, pose, owner, generation):
-    """Start the Lab Dial stroke on the active object's Lab modifier (tool `lab_dial`)."""
+def begin(context, pose, owner, generation, obj=None):
+    """Start the Lab Dial stroke (tool `lab_dial`) on `obj` (the touched object) if it has a Lab modifier,
+    else on the active object's Lab modifier."""
     global _DIAL_CLASS
     from . import viewer_scale
     if context.mode != "OBJECT":
         raise editing.EditRejected("Switch to Object Mode for the Lab Dial")
-    obj = context.active_object
+    if obj is None or obj.type not in {"MESH", "CURVE"} or lab_modifier(obj) is None:
+        obj = context.active_object
     if obj is None or obj.type not in {"MESH", "CURVE"}:
         raise editing.EditRejected("Select an object with a Lab modifier")
     mod = lab_modifier(obj)

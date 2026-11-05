@@ -3,7 +3,7 @@
 bl_info = {
     "name": "XR Workbench",
     "author": "Andrew Rainsberger",
-    "version": (0, 20, 0),
+    "version": (0, 21, 0),
     "blender": (4, 5, 0),
     "location": "3D Viewport > Sidebar > XR Workbench",
     "description": "Experimental source-native XR editor and gesture workbench",
@@ -18,6 +18,7 @@ from . import (  # noqa: E402
     creative_tools as creative_tools, materials_lab, modifier_tower, node_garden, onboarding, physical_tools, quick_actions, ray_feedback, runtime as runtime, ui,
     navigation, prefabs, sdf_modeling, studio, tool_wheel, undo_ring, uv_tools, viewer_scale,
     growth, live_cage, retopo, subdiv_lab, tool_props,
+    contact, contact_tools as contact_tools, feel,  # 0.21: physical_tools.begin dispatches to contact_tools.
 )
 
 _MODULES = (ui, controllers, editing, hands, image_gestures, viewer_scale, physical_tools,
@@ -47,6 +48,8 @@ def register():
     if _xr_start_pre not in bpy.app.handlers.xr_session_start_pre:
         bpy.app.handlers.xr_session_start_pre.append(_xr_start_pre)
     modifier_tower.register_handlers()
+    if _depsgraph_post not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_depsgraph_post)
     live_cage.register()
     retopo.register()
 
@@ -56,7 +59,11 @@ def unregister():
     retopo.unregister()
     tool_props.clear()  # GPU batches must go before Blender exits, or it can crash.
     edge_editing.stop_overlay()
-    ray_feedback.stop()
+    ray_feedback.stop()  # Also stops the feel layer's sounds and clears the contact cache.
+    feel.stop()
+    contact.clear()
+    if _depsgraph_post in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_post)
     tool_wheel.close()
     undo_ring.close()
     modifier_tower.unregister_handlers()
@@ -69,6 +76,15 @@ def unregister():
         del bpy.types.WindowManager.xrwb_settings
     for cls in reversed([cls for module in _MODULES for cls in module.CLASSES]):
         bpy.utils.unregister_class(cls)
+
+
+@persistent
+def _depsgraph_post(scene, depsgraph):
+    # Contact's BVH cache: geometry marks a tree dirty, a transform only refreshes its matrices.
+    try:
+        contact.on_depsgraph_update(scene, depsgraph)
+    except Exception as exc:  # Never break Blender's update loop.
+        print(f"XR contact update failed: {exc}", flush=True)
 
 
 @persistent

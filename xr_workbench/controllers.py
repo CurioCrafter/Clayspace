@@ -140,8 +140,41 @@ def _push_undo(message):
     return editing.push_undo(message)
 
 
+def _feel_event(context, user_path, kind):
+    """The 0.21 feel layer's extra sound for an outcome (never breaks input)."""
+    from . import physical_tools
+    feel = physical_tools.optional("feel")
+    if feel is not None and user_path in {LEFT_HAND, RIGHT_HAND}:
+        try:
+            feel.event(context, user_path, kind)
+        except Exception:
+            pass
+
+
+def feel_commit(context, user_path, transaction):
+    """After a committed stroke: the feel's commit sound and the 0.25 s success flash."""
+    from . import physical_tools
+    feel = physical_tools.optional("feel")
+    if feel is None or not hasattr(transaction, "feel_commit"):  # Strokes only; moves keep their pulse.
+        return
+    try:
+        if transaction.feel_commit:
+            feel.event(context, user_path, "commit")
+        if transaction.flashed:
+            return  # Place, Prefab and Mask Extract flashed their own result.
+        current, touched = getattr(transaction, "current", None), getattr(transaction, "touched", None)
+        if current is not None and touched is not None and len(touched) == len(current) and touched.any():
+            feel.flash(points=current[touched])  # feel caps it at 2,000 crosses.
+        elif getattr(transaction, "obj", None) is not None:
+            feel.flash(corners=physical_tools.bracket_lines(transaction.obj))
+    except Exception:  # A removed object (ReferenceError) or a half-built stroke: no flash.
+        pass
+
+
 def pulse(context, user_path: str, kind: str = "click") -> bool:
     """Short native vibration on one controller; silently skipped when unavailable."""
+    if kind in {"reject", "cancel"}:
+        _feel_event(context, user_path, kind)  # Extra, never a replacement for the pulse below.
     try:
         strength = float(context.window_manager.xrwb_settings.haptic_strength)
         if strength <= 0.0 or user_path not in {LEFT_HAND, RIGHT_HAND}:
@@ -1029,7 +1062,8 @@ def _begin_scene_tool(context, event):
         return True, f"{tool} captured; move the trigger hand, release to confirm"
     from . import physical_tools
 
-    if tool in physical_tools.TOOLS:
+    contact_tools = physical_tools.optional("contact_tools")
+    if tool in physical_tools.TOOLS or (contact_tools is not None and tool in contact_tools.TOOLS):
         from . import interaction
 
         pose = _pose_from_event(event)
@@ -1236,6 +1270,7 @@ def _twin_second_hand(context, event, gesture) -> set[str]:
             interaction_log.emit("commit", getattr(result, "message", "Stroke committed"), context,
                                  action=gesture.action, hand=_event_hand(event))
             pulse(context, _event_hand(event), "commit")
+            feel_commit(context, gesture.user_path, transaction)
             _active_gesture = None
         return {"FINISHED"}
     transaction.pressure = _trigger_pressure(context, event)
@@ -1631,6 +1666,12 @@ def _update_move(context, event, gesture: _ActiveGesture) -> tuple[bool, str]:
     gesture.primary_direction = tuple(direction)
     if hasattr(gesture.transaction, "pressure"):
         gesture.transaction.pressure = _trigger_pressure(context, event)
+        if getattr(gesture.transaction, "contact_mode", False):
+            # Contact mode: pushing the tip in is the pressure; the trigger only engages the tool.
+            from . import physical_tools
+            touch = physical_tools.current_contact(gesture.user_path)
+            if touch is not None:
+                gesture.transaction.pressure = max(0.15, float(touch.pressure))
     return _apply_move(context, gesture)
 
 
@@ -1784,6 +1825,7 @@ def dispatch_xr_event(context, event) -> set[str]:
             except RuntimeError:
                 pass
         pulse(context, gesture.user_path, "commit")
+        feel_commit(context, gesture.user_path, gesture.transaction)
         if gesture.second_key is not None:
             _release_required.add(gesture.second_key)  # Drain the still-held second hand.
         _active_gesture = None

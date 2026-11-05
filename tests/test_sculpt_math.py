@@ -1,5 +1,6 @@
 """Pure-numpy tests for the sculpt brush maths (no bpy). Loads the module by path."""
 import importlib.util
+import math
 from pathlib import Path
 import unittest
 
@@ -35,6 +36,20 @@ class ChunkTests(unittest.TestCase):
 
     def test_empty_when_far(self):
         self.assertEqual(len(sm.Chunks(self.pts).candidates(np.array([9.0, 9.0, 9.0]), 0.1)), 0)
+
+
+class SpanTests(unittest.TestCase):
+    def test_spans_cover_every_point_the_candidates_do_and_merge_neighbours(self):
+        pts = np.linspace(0.0, 1.0, 40_000)[:, None] * np.array([1.0, 0.0, 0.0])
+        chunks = sm.Chunks(pts)
+        centre = np.array([0.5, 0.0, 0.0])
+        spans = chunks.spans(centre, 0.05)
+        covered = np.concatenate([np.arange(a, b) for a, b in spans])
+        self.assertTrue(set(chunks.candidates(centre, 0.05)) <= set(covered))
+        self.assertLess(len(covered), len(pts))
+        self.assertEqual(chunks.spans(np.array([9.0, 9.0, 9.0]), 0.1), [])
+        wide = chunks.spans(centre, 2.0)
+        self.assertEqual(wide, [(0, len(pts))])  # Adjacent chunks merge into one run.
 
 
 class CopyTests(unittest.TestCase):
@@ -91,6 +106,64 @@ class BrushTests(unittest.TestCase):
         for row, v in enumerate(ids):
             nb = [b if a == v else a for a, b in edges if v in (a, b)]
             np.testing.assert_allclose(got[row], pts[nb].mean(axis=0))
+
+
+class TouchToolMathTests(unittest.TestCase):
+    """0.21 helpers: press-to-build, cone spray, stamp footprints, extract thickness, seam paths."""
+
+    def test_press_floor_scales_with_time_and_units(self):
+        self.assertAlmostEqual(sm.press_floor(0.1, 1.0), 0.002)
+        self.assertAlmostEqual(sm.press_floor(0.1, 2.0), 0.004)
+        self.assertEqual(sm.press_floor(-1.0, 1.0), 0.0)
+
+    def test_rub_speed_raises_smoothing_from_half_to_full(self):
+        self.assertAlmostEqual(sm.smooth_speed_factor(0.0, 0.3), 0.5)
+        self.assertAlmostEqual(sm.smooth_speed_factor(0.3, 0.3), 1.0)
+        self.assertAlmostEqual(sm.smooth_speed_factor(9.0, 0.3), 1.0)
+
+    def test_cone_rays_are_unit_inside_the_angle_and_rotate_with_phase(self):
+        d = np.array([0.0, 0.0, -1.0])
+        rays = sm.cone_directions(d, 0.3, 12, 0.0)
+        np.testing.assert_allclose(np.linalg.norm(rays, axis=1), 1.0)
+        self.assertTrue(np.all(rays @ d >= np.cos(0.3) - 1e-9))
+        self.assertGreater(np.linalg.norm(sm.cone_directions(d, 0.3, 12, 0.7) - rays), 0.1)
+        # Spread across the cone, not bunched on the axis.
+        self.assertGreater((rays @ d).min(), 0.9)
+        self.assertLess((rays @ d).min(), 0.99)
+
+    def test_spray_spot_grows_with_distance_and_has_a_floor(self):
+        half = math.atan(0.2)
+        self.assertAlmostEqual(sm.spray_spot(0.5, half, 0.03), 0.1)
+        self.assertAlmostEqual(sm.spray_spot(0.0, half, 0.03), 0.006)
+
+    def test_stamp_footprints_are_positive_inside(self):
+        pts = np.array([[0.0, 0.0], [0.09, 0.0], [0.11, 0.0], [0.0, 0.04]])
+        square = sm.stamp_footprint("SQUARE", pts, (0.1, 0.05))
+        self.assertTrue(np.all(square[[0, 1, 3]] >= 0.0) and square[2] < 0.0)
+        circle = sm.stamp_footprint("CIRCLE", pts, (0.1, 0.1))
+        self.assertAlmostEqual(circle[0], 0.1)
+        self.assertLess(circle[2], 0.0)
+        ring = sm.stamp_footprint("RING", pts, (0.1, 0.1), inner=0.5)
+        self.assertLess(ring[0], 0.0)  # The hole in the middle.
+        self.assertGreater(ring[1], 0.0)
+
+    def test_edge_soft_is_a_smoothstep(self):
+        np.testing.assert_allclose(sm.edge_soft(np.array([-1.0, 0.0, 0.5, 1.0, 2.0])), [0, 0, 0.5, 1, 1])
+
+    def test_extract_thickness_is_one_mm_per_cm_whole_mm_and_clamped(self):
+        self.assertEqual(sm.extract_thickness_mm(4.0, 0.0), 4.0)
+        self.assertEqual(sm.extract_thickness_mm(4.0, 0.03), 7.0)  # 3 cm of hand = 3 mm more.
+        self.assertEqual(sm.extract_thickness_mm(4.0, -0.2), 0.5)
+        self.assertEqual(sm.extract_thickness_mm(4.0, 2.0), 50.0)
+
+    def test_shortest_path_prefers_light_edges_and_respects_the_edge_limit(self):
+        graph = {0: [(1, 0, 1.0), (2, 1, 5.0)], 1: [(0, 0, 1.0), (2, 2, 1.0)], 2: [(1, 2, 1.0), (0, 1, 5.0)]}
+        near = lambda v: graph[v]  # noqa: E731
+        self.assertEqual(sm.shortest_path(near, 0, 2), [0, 2])
+        self.assertEqual(sm.shortest_path(near, 0, 0), [])
+        line = {i: [(i + 1, i, 1.0)] + ([(i - 1, i - 1, 1.0)] if i else []) for i in range(100)}
+        self.assertEqual(len(sm.shortest_path(lambda v: line[v], 0, 60)), 60)
+        self.assertIsNone(sm.shortest_path(lambda v: line[v], 0, 70, max_edges=64))
 
 
 if __name__ == "__main__":

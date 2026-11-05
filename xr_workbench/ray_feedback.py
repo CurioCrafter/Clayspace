@@ -8,6 +8,7 @@ on, so if this overlay fails the native ray is still there.
 from __future__ import annotations
 
 import math
+from time import perf_counter
 
 import bpy
 from mathutils import Matrix, Quaternion, Vector
@@ -31,7 +32,13 @@ TOOL_COLOURS = {
     "sculpt_snake": (1.0, 0.6, 0.2), "sculpt_inflate": (1.0, 0.6, 0.2), "sculpt_crease": (1.0, 0.6, 0.2),
     "sculpt_layer": (1.0, 0.6, 0.2), "sculpt_mask": (0.55, 0.6, 0.75),
     "lab_dial": (0.75, 0.4, 1.0), "grow_seed": (0.45, 0.85, 0.3), "retopo_loom": (0.2, 0.9, 1.0),
+    # 0.21 contact tools: cutters red, shapers clay orange.
+    "knife": (1.0, 0.25, 0.2), "drill": (1.0, 0.25, 0.2), "mallet": (1.0, 0.6, 0.2), "chisel": (1.0, 0.6, 0.2),
+    "rake": (1.0, 0.6, 0.2), "sandpaper": (1.0, 0.6, 0.2), "rolling_pin": (1.0, 0.6, 0.2),
+    "clay_gun": (1.0, 0.6, 0.2), "mask_extract": (0.55, 0.6, 0.75),
 }
+# Tools whose size is the sculpt brush radius (the Brush Dial sizes them too).
+BRUSH_SIZED = {"mallet", "chisel", "rake", "sandpaper", "rolling_pin", "drill", "mask_extract"}
 DRAW_TIP_M = 0.2  # Draw tools start 20 cm ahead of the controller (draw_editing).
 GHOST_M = 0.05
 SEGMENTS = 32
@@ -52,16 +59,22 @@ HINT_FONT_PX = 48
 _hovered: dict[str, str] = {}
 # Latest aim pose per hand (plain tuples) for menu actions that place things at your hand.
 last_poses: dict[str, tuple] = {}
-# Held tool props: (prop or tool id, world matrix rows, squeeze 0..1, accent or None, hand path).
+# Held tool props: (prop or tool id, world matrix rows, squeeze 0..1, accent or None, hand path,
+# contact push-out offset or None, squash (normal, amount) or None, spin rad/s or None).
 _props: list[tuple] = []
+_touching: set = set()  # Hands whose tip touches a surface: their glow ring replaces the ray ring.
+# Per-frame contact + feel + prop cost of _pose_timer (ms): last, exponential average, worst.
+stats = {"frame_ms": 0.0, "frame_avg_ms": 0.0, "frame_max_ms": 0.0, "frames": 0}
 _handle = None
 _was_running = False
 _last_error = ""
 
 
 def brush_radius(settings, tool, units):
-    if tool.startswith("sculpt_"):
+    if tool.startswith("sculpt_") or tool in BRUSH_SIZED:
         return float(settings.sculpt_radius_m) * units
+    if tool == "clay_gun":
+        return float(settings.pen_radius_m) * units
     if tool in {"spray_material", "paint_vertex"}:
         return float(settings.spray_radius_m) * units
     return 0.012 * units
@@ -521,11 +534,65 @@ def _held_props(context, settings, tool, poses, units):
         if gesture is not None and gesture.user_path == main:
             squeeze = float(getattr(getattr(gesture, "transaction", None), "pressure", 1.0) or 1.0)
         accent = tuple(settings.paint_colour)[:3] if tool == "paint_vertex" else None
-        held.append((tool, _pose_matrix(origin, rotation, units), squeeze, accent, main))
+        held.append((tool, _pose_matrix(origin, rotation, units), squeeze, accent, main, *_contact_pose(main)))
     if off in poses and onboarding.prefs()["live_cage"]:
         origin, rotation, _direction = poses[off]
-        held.append(("live_cage", _pose_matrix(origin, rotation, units), 0.0, None, off))
+        held.append(("live_cage", _pose_matrix(origin, rotation, units), 0.0, None, off, *_contact_pose(off)))
     return held
+
+
+def _contact_pose(hand):
+    """(push-out offset, squash, spin) for the prop in this hand: plain values from contact and feel."""
+    from . import contact, feel
+    touch = contact.current(hand)
+    offset = touch.pushed_offset if touch is not None and touch.touching and not touch.push_dropped else None
+    active = editing.active_transaction()
+    spin = getattr(active, "spin", None) if active is not None and getattr(active, "hand", "") == hand else None
+    return offset, feel.squash_for(hand), spin
+
+
+def hand_tools(settings, poses):
+    """{hand: tool id} for contact: the trigger tool, or the Live Cage glove on an idle off hand."""
+    from . import onboarding
+    prefs = onboarding.prefs()
+    main = controllers.LEFT_HAND if prefs["left_handed"] else controllers.RIGHT_HAND
+    tool = str(settings.edit_tool)
+    gesture = controllers._active_gesture
+    glove = prefs["live_cage"] and prefs["tool_props"]
+    return {hand: (tool if hand == main or not glove or (gesture is not None and gesture.user_path == hand)
+                   else "live_cage") for hand in poses}
+
+
+def frame(context, poses, now=None):
+    """One contact frame: contact, then feel, then the held props at the contact-corrected pose.
+
+    poses are {hand: (origin Vector, rotation Quaternion, direction Vector)}. Returns {hand: Contact}.
+    Headless smokes call this directly with synthetic poses.
+    """
+    from . import contact, feel, onboarding
+    began = perf_counter()
+    now = began if now is None else now
+    settings = context.window_manager.xrwb_settings
+    tools = hand_tools(settings, poses)
+    gesture = controllers._active_gesture
+    if onboarding.prefs()["touch_tools"] and context.mode == "OBJECT":
+        held = {hand: gesture is not None and gesture.user_path == hand and gesture.transaction is not None
+                for hand in poses}
+        contacts = contact.update(context, {hand: (tuple(p[0]), tuple(p[1])) for hand, p in poses.items()},
+                                  tools, now, held)
+    else:
+        contacts = contact.update(context, {}, {}, now)  # Ray only, as in 0.20: no contacts, no push.
+    feel.update(context, contacts, tools, editing.active_transaction(), now)
+    _touching.clear()
+    _touching.update(hand for hand, touch in contacts.items() if touch.touching)
+    _props[:] = _held_props(context, settings, str(settings.edit_tool), poses,
+                            controllers._world_units_per_metre(context))
+    spent = (perf_counter() - began) * 1000.0
+    stats["frames"] += 1
+    stats["frame_ms"] = spent
+    stats["frame_avg_ms"] = spent if stats["frames"] == 1 else stats["frame_avg_ms"] * 0.95 + spent * 0.05
+    stats["frame_max_ms"] = max(stats["frame_max_ms"], spent)
+    return contacts
 
 
 def _pose_matrix(origin, rotation, units):
@@ -556,29 +623,18 @@ def refresh(context) -> None:
         _props.clear()
         return
     state = context.window_manager.xr_session_state
-    actionmap = controllers._find_actionmap(state)
-    if actionmap is None:
+    poses = aim_poses(context, state)
+    if poses is None:
         _cache.clear()
         return
-    aim = next(item for item in actionmap.actionmap_items if item.name == "controller_aim")
+    for path in [path for path in _cache if path not in poses]:
+        del _cache[path]
     units = controllers._world_units_per_metre(context)
     tool = str(settings.edit_tool)
     depsgraph = context.evaluated_depsgraph_get()
     capture = controllers._active_gesture
-    poses = {}
     hover_lines = []
-    for index, path in enumerate(entry.path for entry in aim.user_paths):
-        if not state.controller_aim_active_get(context, index):
-            _cache.pop(path, None)
-            continue
-        pose = controllers._validated_pose(state.controller_aim_location_get(context, index),
-                                           state.controller_aim_rotation_get(context, index))
-        if pose is None:
-            _cache.pop(path, None)
-            continue
-        origin, rotation, direction = pose
-        origin, direction = Vector(origin), Vector(direction)
-        poses[path] = (origin, Quaternion(rotation), direction)
+    for path, (origin, rotation, direction) in poses.items():
         last_poses[path] = (tuple(origin), tuple(rotation), tuple(direction))
         if path == tool_wheel._state.get("hand") and tool_wheel.follow(origin):
             controllers.pulse(context, path, "tick")  # Feel each wedge as you cross into it.
@@ -609,7 +665,8 @@ def refresh(context) -> None:
     _hints.clear()
     _shapes[:] = (_preview_shapes(context, settings, tool, units, poses) + hover_lines) if rings else hover_lines
     _shapes.extend(_menu_cursor(context, poses))
-    _props[:] = _held_props(context, settings, tool, poses, units)
+    if not bpy.app.timers.is_registered(_pose_timer):
+        _props[:] = _held_props(context, settings, tool, poses, units)  # 90 Hz timer off: props at 30 Hz.
     if hasattr(state, "viewer_pose_location"):
         tool_wheel.update_belt(settings, tuple(state.viewer_pose_location), tuple(state.viewer_pose_rotation), units)
     if rings and tool == "retopo_loom" and controllers._pointer_hand in poses:
@@ -628,6 +685,23 @@ def refresh(context) -> None:
             side = 1 if path == controllers.RIGHT_HAND else -1
             _hints.append(Plate(hint_matrix(origin, viewer_rotation, side, units, float(settings.label_scale)),
                                 hint_lines(context, settings, path)))
+
+
+def aim_poses(context, state):
+    """{path: (origin, rotation, direction)} of every tracked controller aim, or None without an action map."""
+    actionmap = controllers._find_actionmap(state)
+    if actionmap is None:
+        return None
+    aim = next(item for item in actionmap.actionmap_items if item.name == "controller_aim")
+    poses = {}
+    for index, path in enumerate(entry.path for entry in aim.user_paths):
+        if not state.controller_aim_active_get(context, index):
+            continue
+        pose = controllers._validated_pose(state.controller_aim_location_get(context, index),
+                                           state.controller_aim_rotation_get(context, index))
+        if pose is not None:
+            poses[path] = (Vector(pose[0]), Quaternion(pose[1]), Vector(pose[2]))
+    return poses
 
 
 def _retopo_label(context, settings, pose, depsgraph, state, units):
@@ -653,15 +727,17 @@ def _grow_preview(transaction, colour):
 
 def _draw():
     global _last_error
-    from . import live_cage
-    data = tuple(_cache.values())
-    shapes = tuple(_shapes) + tuple(_links)
-    fills = tuple(_fills)
+    from . import feel, live_cage
+    touching = set(_touching)
+    data = tuple(value for path, value in _cache.items() if path not in touching)  # Glow ring replaces it.
+    feel_lines, feel_fills, feel_tris = feel.draw_data(perf_counter())
+    shapes = tuple(_shapes) + tuple(_links) + tuple(feel_lines)
+    fills = tuple(_fills) + tuple(feel_fills)
     hints = tuple(_hints)
     props = tuple(_props)
     fades = live_cage.fade_lines()
     belt = bool(tool_wheel._belt)
-    if not (data or shapes or hints or fills or props or fades or belt or tool_wheel.is_open()):
+    if not (data or shapes or hints or fills or props or fades or belt or feel_tris or tool_wheel.is_open()):
         return
     previous = None
     try:
@@ -712,10 +788,21 @@ def _draw():
             # Props are solid: depth on (tool_props sets and restores it); the lines above stay depth-off.
             from . import tool_props
             current = props[0][0] if props else ""
-            for prop, matrix, squeeze, accent, hand in props:
-                tool_props.draw(None, prop, Matrix(matrix), squeeze=squeeze, theme=accent, hand=hand)
+            for prop, matrix, squeeze, accent, hand, offset, squash, spin in props:
+                tool_props.draw(None, prop, Matrix(matrix), squeeze=squeeze, theme=accent, hand=hand,
+                                squash=squash, spin=spin, offset=offset)
             if belt:
                 tool_wheel.draw_belt(current)
+        if feel_tris:
+            # Crumbs and preview tris hide behind the mesh: depth-tested, after the props.
+            tri_positions, tri_colours = [], []
+            for points, colour, alpha in feel_tris:
+                tri_positions += points
+                tri_colours += [(*colour, alpha)] * len(points)
+            gpu.state.depth_test_set("LESS_EQUAL")
+            tri_shader = gpu.shader.from_builtin("SMOOTH_COLOR")
+            batch_for_shader(tri_shader, "TRIS", {"pos": tri_positions, "color": tri_colours}).draw(tri_shader)
+            gpu.state.depth_test_set("NONE")
         tool_wheel.draw()
         _last_error = ""
     except Exception as exc:
@@ -801,6 +888,32 @@ def _timer():
     return 1.0 / 30.0
 
 
+POSE_INTERVAL_S = 1.0 / 90.0
+
+
+def _pose_timer():
+    """90 Hz: contact, feel and the held props (the full refresh stays at 30 Hz)."""
+    # ponytail: timer-driven, not synced to the XR frame; a real frame hook would remove the beat.
+    global _last_error
+    from . import ui
+    try:
+        context = bpy.context
+        if not runtime.session_running(context):
+            return 0.25  # _timer owns the session end and calls stop().
+        with ui._view3d_override(context):
+            context = bpy.context
+            poses = aim_poses(context, context.window_manager.xr_session_state)
+            if poses is not None:
+                frame(context, poses)
+    except Exception as exc:  # Never let contact break a session.
+        message = f"Contact paused: {type(exc).__name__}: {exc}"
+        if message != _last_error:
+            interaction_log.emit("error", message, level="WARNING", error=exc)
+            _last_error = message
+        return 1.0
+    return POSE_INTERVAL_S
+
+
 def start() -> None:
     global _handle, _was_running
     if bpy.app.background:
@@ -808,8 +921,12 @@ def start() -> None:
     if _handle is None:
         _handle = bpy.types.SpaceView3D.draw_handler_add(_draw, (), "XR", "POST_VIEW")
     _was_running = False
+    from . import feel
+    feel.start(bpy.context)  # Sounds: synthesised once per session; never raises.
     if not bpy.app.timers.is_registered(_timer):
         bpy.app.timers.register(_timer, first_interval=0.1, persistent=False)
+    if not bpy.app.timers.is_registered(_pose_timer):
+        bpy.app.timers.register(_pose_timer, first_interval=0.1, persistent=False)
 
 
 def stop() -> None:
@@ -820,8 +937,14 @@ def stop() -> None:
     _fills.clear()
     _hints.clear()
     _props.clear()
+    _touching.clear()
     _hovered.clear()
     tool_wheel._belt.clear()
+    from . import contact, feel
+    feel.stop()
+    contact.clear()
+    if bpy.app.timers.is_registered(_pose_timer):
+        bpy.app.timers.unregister(_pose_timer)
     if bpy.app.timers.is_registered(_timer):
         bpy.app.timers.unregister(_timer)
     if _handle is not None:

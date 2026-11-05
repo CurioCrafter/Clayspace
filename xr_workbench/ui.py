@@ -14,7 +14,8 @@ import bpy
 from bpy_extras.io_utils import ExportHelper
 
 from . import (
-    controllers, editing, hands, onboarding, physical_tools, polish, retopo, runtime, tool_wheel, viewer_scale,
+    contact_tools, controllers, editing, hands, onboarding, physical_tools, polish, retopo, runtime, tool_wheel,
+    viewer_scale,
 )
 
 # Column-major in a 5 x 2 grid: Create/Edit, Sculpt/Materials, Animate/Menus,
@@ -57,7 +58,12 @@ SCULPT_TOOLS = (("sculpt_grab", "Grab", "Hold trigger on the surface and pull a 
 # 0.20 procedural tools: Subdivision Lab dial, Guided Growth seed, CurioMesh Retopo Loom.
 LAB_TOOLS = (("lab_dial", "Lab Dial", "Hold trigger: up/down sets levels, wrist roll the scheme's main value"),
              ("grow_seed", "Grow", "Hold trigger to plant, pull for direction and length; A re-rolls"),
-             ("retopo_loom", "Retopo", "Point at a mesh and pull the trigger for a clean quad copy beside it"))
+             ("retopo_loom", "Retopo", "Point at a mesh and pull the trigger for a clean quad copy beside it"),
+             ("mask_extract", "Extract",
+              "Pull away from a masked area to set thickness; release makes the shell"))
+# 0.21 Workshop: tools that need the tip to touch the mesh (contact_tools).
+CONTACT_TOOLS = tuple((tool, contact_tools.LABELS[tool], contact_tools.HELP[tool])
+                      for _kind, tool, _label in tool_wheel.WHEELS["WORKSHOP"] if _kind == "tool")
 PAINT_TOOLS = (("spray_material", "Spray Material",
                 "Hold trigger to spray the loaded material onto faces; trigger a block to load it"),
                ("paint_vertex", "Paint Colour",
@@ -77,7 +83,7 @@ QUICK_TOOLS = (("place_object", "Place Shape", "A ghost follows your ray; trigge
                 "Edit Mode: hold trigger and pull to extrude the selected vertices, edges or faces"))
 PLACE_TOOLS = QUICK_TOOLS  # Older name kept for scripts.
 ALL_TOOLS = (EDIT_TOOLS + EDGE_TOOLS + DRAW_TOOLS + CUT_TOOLS + SCULPT_TOOLS + PAINT_TOOLS + ANIMATE_TOOLS
-             + QUICK_TOOLS + LAB_TOOLS)
+             + QUICK_TOOLS + LAB_TOOLS + CONTACT_TOOLS)
 
 def _set_status(settings, summary: str, detail: str = "") -> None:
     settings.status_summary = summary
@@ -496,6 +502,31 @@ class XRWB_PG_settings(bpy.types.PropertyGroup):
     retopo_quality: bpy.props.EnumProperty(
         name="Quality", default="Balanced", options={"SKIP_SAVE"},
         items=tuple((key, key, f"CurioMesh {value.title()}") for key, value in retopo.QUALITY.items()))
+    touch_tools: onboarding.pref_property(
+        bpy.props.BoolProperty, "touch_tools", name="Touch Tools",
+        description="Tools collide with meshes and work where the tip touches; off works along the ray only")
+    tool_sound_volume: onboarding.pref_property(
+        bpy.props.FloatProperty, "tool_sound_volume", name="Tool Sounds", min=0.0, max=1.0, subtype="FACTOR",
+        description="Volume of the generated tool sounds (taps, scrapes, snips)")
+    tool_sound_mute: onboarding.pref_property(
+        bpy.props.BoolProperty, "tool_sound_mute", name="Mute",
+        description="Silence tool sounds; the volume is kept")
+    contact_texture: onboarding.pref_property(
+        bpy.props.BoolProperty, "contact_texture", name="Surface Texture",
+        description="A continuous haptic texture while a tool rubs a surface; taps and commits always play")
+    contact_nudge: onboarding.pref_property(
+        bpy.props.BoolProperty, "contact_nudge", name="Push Loose Objects",
+        description="Tapping a small loose object pushes it a little (one undo step per push)")
+    knife_split: bpy.props.BoolProperty(
+        name="Separate Pieces", default=False, options={"SKIP_SAVE"},
+        description="Knife: move the cut-off piece into its own object")
+    place_mode: bpy.props.EnumProperty(
+        name="Place Mode", default="PLACE", options={"SKIP_SAVE"},
+        items=(("PLACE", "Place", "Trigger places the shape"),
+               ("STAMP", "Stamp", "Press the shape's footprint into a mesh")))
+    uv_seam_unwrap: bpy.props.BoolProperty(
+        name="Unwrap After Cut", default=True, options={"SKIP_SAVE"},
+        description="Scissors: unwrap the islands touching new seams on release")
     tool_props: onboarding.pref_property(
         bpy.props.BoolProperty, "tool_props", name="Tool Props",
         description="Hold a small 3D model of each tool; off shows only the ring cursors")
@@ -1399,6 +1430,14 @@ def _section_sculpt_tools(layout, context, settings):
     _help(layout, "Off-hand trigger in the air: Brush Dial (up/down size, roll strength).")
 
 
+def _section_sculpt_workshop(layout, context, settings):
+    _tool_buttons(layout, context, CONTACT_TOOLS, columns=4)
+    row = layout.row(align=True)
+    row.prop(settings, "knife_split", text="Knife: Separate Pieces", toggle=True)
+    row.prop(settings, "touch_tools", text="Touch Tools", toggle=True)
+    _help(layout, "Touch the mesh with the tool's tip; push in to press harder.")
+
+
 def _section_sculpt_brush(layout, context, settings):
     row = layout.row(align=True)
     row.prop(settings, "sculpt_radius_m", text="Brush")
@@ -1419,7 +1458,8 @@ def _section_sculpt_mask(layout, context, settings):
     for action, label in (("invert", "Invert"), ("clear", "Clear"), ("grow", "Grow"), ("shrink", "Shrink")):
         row.operator(f"xrwb.mask_{action}", text=label)
     row = layout.row(align=True)
-    row.operator("xrwb.mask_extract", text="Extract", icon="MOD_SOLIDIFY")
+    _tool_buttons(row, context, LAB_TOOLS[3:], columns=1)  # Extract tool: pull to set the thickness.
+    row.operator("xrwb.mask_extract", text="Extract Now", icon="MOD_SOLIDIFY")
     row.prop(settings, "mask_extract_m", text="Thickness")
 
 
@@ -1452,7 +1492,7 @@ def _section_sculpt_growth(layout, context, settings):
 
 
 def _section_sculpt_retopo(layout, context, settings):
-    _tool_buttons(layout, context, LAB_TOOLS[2:], columns=1)
+    _tool_buttons(layout, context, LAB_TOOLS[2:3], columns=1)
     row = layout.row(align=True)
     row.prop(settings, "retopo_faces", text="Target Faces")
     row.operator("xrwb.retopo_analyze", text="Analyze", icon="VIEWZOOM")
@@ -1555,6 +1595,8 @@ SECTIONS = {
                     lambda c, s: "Live Cage " + ("on" if s.live_cage else "off")),
     "SCULPT.tools": ("Tools", "SCULPTMODE_HLT", _section_sculpt_tools,
                      lambda c, s: _scene_tool_reason(c, "sculpt_clay") or _active_label(SCULPT_TOOLS, s)),
+    "SCULPT.workshop": ("Workshop", "TOOL_SETTINGS", _section_sculpt_workshop,
+                        lambda c, s: _active_label(CONTACT_TOOLS, s) or "Knife, Mallet, Chisel, ..."),
     "SCULPT.brush": ("Brush", "BRUSH_DATA", _section_sculpt_brush, _brush_summary),
     "SCULPT.symmetry": ("Symmetry", "MOD_MIRROR", _section_sculpt_symmetry, _brush_summary),
     "SCULPT.mask": ("Mask", "MOD_MASK", _section_sculpt_mask, lambda c, s: "Invert · Grow · Extract"),
@@ -1788,6 +1830,13 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row.prop(settings, "ray_markers", text="Ray Rings", toggle=True)
                 row.prop(settings, "button_hints", text="Button Labels", toggle=True)
                 row = layout.row(align=True)
+                row.prop(settings, "touch_tools", text="Touch Tools", toggle=True)
+                row.prop(settings, "contact_texture", text="Texture", toggle=True)
+                row.prop(settings, "contact_nudge", text="Push Objects", toggle=True)
+                row = layout.row(align=True)
+                row.prop(settings, "tool_sound_volume", text="Sounds", slider=True)
+                row.prop(settings, "tool_sound_mute", text="Mute", toggle=True)
+                row = layout.row(align=True)
                 row.prop(settings, "hand_menu_width", text="Menu Width")
                 row.prop(settings, "scale_drag_distance_m", text="Scale Drag (2x)")
                 layout.label(text="Scale: drag sideways. Smaller distance = faster resizing.")
@@ -1826,6 +1875,9 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row.prop(settings, "two_hand", text="Two Hands")
                 row.prop(settings, "hover_ticks", text="Hover Ticks", toggle=True)
                 row.prop(settings, "uv_island_angle", text="UV Crease")
+                row = layout.row(align=True)
+                row.prop(settings, "place_mode", expand=True)
+                row.prop(settings, "uv_seam_unwrap", text="Scissors Unwrap", toggle=True)
                 row = layout.row(align=True)
                 row.prop(settings, "sculpt_mirror_x", text="Sculpt Mirror X", toggle=True)
                 row.prop(settings, "use_pressure", text="Trigger Pressure", toggle=True)

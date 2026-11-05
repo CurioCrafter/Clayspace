@@ -8,7 +8,9 @@ Only our code and Blender's native mesh/material/animation data are used.
 """
 from __future__ import annotations
 
+import importlib
 import math
+import time
 
 import bpy
 import numpy as np
@@ -24,7 +26,7 @@ SCULPT_TOOLS = {"sculpt_grab", "sculpt_clay", "sculpt_smooth", "sculpt_flatten",
                 "sculpt_inflate", "sculpt_crease", "sculpt_layer", "sculpt_mask"}
 TOOLS = SCULPT_TOOLS | {"spray_material", "scrub_time", "place_object", "measure", "eyedropper", "uv_island",
                         "draw_curve", "paint_vertex", "place_prefab", "sdf_blob", "lab_dial", "grow_seed",
-                        "retopo_loom"}
+                        "retopo_loom", "mask_extract"}
 # Off-hand trigger in the air with one of these opens the Brush Dial instead of being refused.
 DIAL_TOOLS = SCULPT_TOOLS | {"spray_material", "retopo_loom"}
 DIAL_REACH_M = 2.0  # Physical: a surface farther than this along the ray counts as "in the air".
@@ -43,6 +45,176 @@ PLACE_SHAPES = {
 SWATCH_KEY = "xrwb_swatch"
 MIN_SCULPT_VERTICES = 50
 MAX_SCULPT_VERTICES = 2_000_000
+
+
+# ---- 0.21 touch tools: optional contact / feel engine ----------------------------------------
+# contact.py, feel.py and contact_tools.py are built beside this file. Every call below is guarded:
+# without them (or with `touch_tools` off) each tool works along the ray exactly as in 0.20.
+_MODS = {}
+REACH_M = 0.03  # Same as contact.REACH_M: a tip this close (physical) to a surface counts as touching.
+SPOT_FRACTION = 0.15  # Spray: each ray paints faces within this fraction of the cone's cross-section.
+SPRAY_RAYS = 12
+SPRAY_MIN_DISTANCE_M = 0.03  # A nozzle touching the surface still paints a small patch.
+SPRAY_NOZZLE_M = 0.15  # The cone's half-angle is atan(spray radius / 15 cm).
+SNAP_M = 0.01  # Measure snaps to a vertex of the touched face within 1 cm.
+STAMP_DEPTH_M = 0.005  # Stamp presses 5 mm at full pressure and strength.
+STAMP_KINDS = {"CUBE": "SQUARE", "PLANE": "SQUARE", "SPHERE": "CIRCLE", "CYLINDER": "CIRCLE", "CONE": "CIRCLE",
+               "TORUS": "RING"}
+
+
+def optional(name):
+    """A sibling module that may not be there (contact, feel, contact_tools), else None."""
+    if name not in _MODS:
+        try:
+            _MODS[name] = importlib.import_module("." + name, __package__)
+        except Exception:  # ImportError, or a half-built module: tools must keep working.
+            _MODS[name] = None
+    return _MODS[name]
+
+
+def touch_enabled() -> bool:
+    try:
+        from . import onboarding
+        return bool(onboarding.prefs().get("touch_tools", True))
+    except Exception:
+        return True
+
+
+def current_contact(hand):
+    """The hand's Contact when contact mode is on and its tip touches a mesh, else None."""
+    contact = optional("contact")
+    if contact is None or not touch_enabled():
+        return None
+    try:
+        found = contact.current(hand)
+    except Exception:
+        return None
+    return found if found is not None and found.touching and found.obj_name else None
+
+
+def feel_event(hand, kind, strength=1.0, at=None, normal=None):
+    feel = optional("feel")
+    if feel is not None:
+        try:
+            feel.event(bpy.context, hand, kind, strength, at, normal)
+        except Exception:
+            pass
+
+
+def feel_call(name, *args):
+    """feel.preview / feel.chips / feel.flash, never raising."""
+    feel = optional("feel")
+    if feel is not None:
+        try:
+            getattr(feel, name)(*args)
+        except Exception:
+            pass
+
+
+def object_colour(obj):
+    """Crumb colour: the object's active material colour, else the theme's muted colour."""
+    try:
+        return tuple(obj.active_material.diffuse_color)
+    except (AttributeError, ReferenceError):
+        from . import polish
+        return tuple(polish.MUTED)
+
+
+def bracket_lines(obj):
+    """LINES points of short corner brackets around an object (polish.corner_brackets), for feel.flash."""
+    from . import polish
+    return polish.corner_brackets(obj.matrix_world, [tuple(corner) for corner in obj.bound_box])
+
+
+def ray_object(context, obj, origin, direction, distance):
+    """(world location, world normal, face index) where a ray meets obj, else None.
+
+    Goes through the contact engine's cached BVH; without it, falls back to Object.ray_cast on the evaluated
+    mesh (no view_layer.update, so it never sees a mesh that changed since the last redraw).
+    """
+    contact = optional("contact")
+    if contact is not None:
+        try:
+            found = contact.ray_cast(obj, origin, direction, distance)
+        except Exception:
+            found = False
+        if found is not False:
+            return None if found is None else (Vector(found[0]), Vector(found[1]), int(found[2]))
+    inverse = obj.matrix_world.inverted()
+    hit, location, normal, index = obj.ray_cast(
+        inverse @ Vector(origin), (inverse.to_3x3() @ Vector(direction)).normalized(),
+        depsgraph=context.evaluated_depsgraph_get())
+    if not hit:
+        return None
+    point = obj.matrix_world @ location
+    if (point - Vector(origin)).length > distance:
+        return None
+    return point, (inverse.transposed().to_3x3() @ normal).normalized(), index
+
+
+def aim_hit(context, pose, hand, touching, last=None, distance=None):
+    """(object, world point, world normal, face index) under the tip (contact) or the ray, else None.
+
+    Order: the hand's contact; the last object again through the cached BVH when it is dense (no
+    view_layer.update per sample); the scene ray cast.
+    """
+    units = viewer_scale.world_units_per_metre(context)
+    origin, direction, _rotation = _pose_ray(pose)
+    distance = (50.0 if distance is None else distance) * units
+    if touching:
+        found = current_contact(hand)
+        obj = bpy.data.objects.get(found.obj_name) if found is not None else None
+        if obj is not None:
+            return obj, Vector(found.point), Vector(found.normal), int(found.face_index)
+    if last is not None and last.type == "MESH" and len(last.data.vertices) > DENSE_RAY_VERTICES:
+        # ponytail: a dense target stays the target while the ray still meets it; aiming past it to a nearer
+        # object paints/picks the dense one. Upgrade: compare against a cached scene ray cast every 100 ms.
+        try:
+            found = ray_object(context, last, origin, direction, distance)
+        except ReferenceError:
+            found = None
+        if found is not None:
+            return last, found[0], found[1], found[2]
+    context.view_layer.update()
+    hit, location, normal, index, evaluated, _matrix = context.scene.ray_cast(
+        context.evaluated_depsgraph_get(), origin, direction, distance=distance)
+    if not hit or evaluated is None:
+        return None
+    return evaluated.original, Vector(location), Vector(normal), index
+
+
+def contact_frame(point, normal, dimensions, yaw_angle, units, align=True):
+    """Where a placed shape rests on a contact: (location, rotation).
+
+    align: the shape's local Z follows the surface normal (yaw kept); else it stays upright and only
+    its yaw is used (it is lifted out by its biggest half extent, as `placement` does on a wall).
+    """
+    n = Vector(normal).normalized()
+    half = Vector(dimensions) * 0.5 + Vector((1.0, 1.0, 1.0)) * RESTING_GAP_M * units
+    yaw = Quaternion((0.0, 0.0, 1.0), yaw_angle)
+    if align:
+        return Vector(point) + n * half.z, Vector((0.0, 0.0, 1.0)).rotation_difference(n) @ yaw
+    return Vector(point) + n * max(half.x, half.y, half.z), yaw
+
+
+def hand_yaw(pose):
+    _origin, direction, _rotation = _pose_ray(pose)
+    return math.atan2(-direction.x, direction.y)
+
+
+def rest_contact(stroke, own_names):
+    """(point, normal) a placement stroke rests on, or None to use the ray rule.
+
+    The stroke's own shape sits under the tip and would be touched too: while the contact is that shape,
+    the last real surface is kept so the shape does not climb on itself.
+    """
+    if not stroke.contact_mode:
+        return None
+    found = current_contact(stroke.hand)
+    if found is not None and found.obj_name not in own_names:
+        stroke._rest = (Vector(found.point), Vector(found.normal))
+        return stroke._rest
+    return getattr(stroke, "_rest", None) if found is not None else None
 
 
 _falloff = sculpt_math.falloff
@@ -89,6 +261,9 @@ class _Stroke:
 
     label = "Stroke"
     needs_undo = True
+    contact_mode = False  # Set by begin(): the stroke started with the tip touching a surface.
+    feel_commit = True  # The controller plays feel.event("commit") on release unless a stroke does its own.
+    flashed = False  # True once the stroke flashed its result itself (the controller then skips feel.flash).
 
     def __init__(self, context, pose, owner, generation, units):
         self.request = EditRequest(owner, TransformTool.MOVE, generation, pose, TransformOptions())
@@ -102,6 +277,22 @@ class _Stroke:
     @property
     def finished(self):
         return self.capture.finished
+
+    @property
+    def hand(self):
+        return self.request.owner.identifier
+
+    def flash(self, *objects):
+        """Commit flash: brackets around each result object (contact engine's feel module)."""
+        for obj in objects:
+            feel_call("flash", None, bracket_lines(obj))
+        self.flashed = True
+
+    def _fx(self, kind, strength=1.0, at=None, normal=None):
+        feel_event(self.hand, kind, strength, at, normal)
+
+    def _preview(self, kind, **data):
+        feel_call("preview", self.hand, kind, data)
 
     def _valid(self, context):
         return (editing._safe_pointer(context.scene) == self.scene_pointer
@@ -340,9 +531,9 @@ class SculptStroke(_Stroke):
     symmetry repeat every brush through `copies`; a second hand can join (twin).
     """
 
-    def __init__(self, context, obj, hit, normal, pose, tool, owner, generation, units, settings):
+    def __init__(self, context, obj, hit, normal, pose, tool, owner, generation, units, settings, label=None):
         super().__init__(context, pose, owner, generation, units)
-        self.label = LABELS[tool]
+        self.label = LABELS.get(tool) or label or tool
         self.tool = tool
         self.obj = obj
         self.mesh = obj.data
@@ -379,6 +570,8 @@ class SculptStroke(_Stroke):
         self.touched = np.zeros(count, dtype=bool)
         self.frame = 0
         self.bvh = None
+        self.clock = time.monotonic()  # Last primary sample, for press-to-build and rub speed.
+        self.chip_path = 0.0
         self.dirty_ids = []
         self.local = flat.copy()  # What the mesh holds now (local float32); only touched rows are recomputed.
         self.secondary = {}
@@ -410,10 +603,19 @@ class SculptStroke(_Stroke):
         else:
             self.detail = bool(choice) and choice != "OFF"
         self.primary = _Source(owner, pose.position, hit)
+        self.start_hit = np.array(hit, dtype=np.float64)
         if tool == "sculpt_grab":
             self._grab_sets(self.primary, hit)
             if not any(len(s[0]) for s in self.primary.sets):
                 raise editing.EditRejected("No vertices under the brush; shrink yourself or enlarge the brush")
+        # The cached BVH is stale while this stroke edits the mesh: the contact engine asks us instead.
+        self._probe_name = obj.name
+        contact = optional("contact")
+        if contact is not None:
+            try:
+                contact.set_live_probe(self._probe_name, self.probe)
+            except Exception:
+                self._probe_name = None
 
     # -- helpers ---------------------------------------------------------
     @property
@@ -428,6 +630,19 @@ class SculptStroke(_Stroke):
     @property
     def twin(self):
         return bool(self.secondary)
+
+    def probe(self, tip, radius):
+        """Live surface for the contact engine: (point, normal, signed distance) or None.
+
+        ponytail: nearest current vertex and the last surface normal, not the nearest triangle; fine at
+        sculpt densities. Upgrade: a triangle test over the candidates' faces.
+        """
+        ids = self.chunks.candidates(np.asarray(tip, dtype=np.float64), radius + REACH_M * self.units)
+        if ids.size == 0:
+            return None
+        offset = self.current[ids] - tip
+        point = self.current[ids[int(np.argmin(np.einsum("ij,ij->i", offset, offset)))]]
+        return point, self.normal, float(np.dot(np.asarray(tip) - point, self.normal))
 
     def _mirror_point(self, point):
         return (self.mirror @ np.append(point, 1.0))[:3]
@@ -520,6 +735,14 @@ class SculptStroke(_Stroke):
         if self.backup is not None:
             self.backup.free()
             self.backup = None
+        if getattr(self, "_probe_name", None):
+            contact = optional("contact")
+            if contact is not None:
+                try:
+                    contact.clear_live_probe(self._probe_name)
+                except Exception:
+                    pass
+            self._probe_name = None
         super()._finish(phase)
 
     def _before_push(self, context):
@@ -534,7 +757,19 @@ class SculptStroke(_Stroke):
                 self.backup.free()
                 self.backup = None
 
-    def _surface_hit(self, context, pose):
+    def _surface_hit(self, context, pose, hand=None):
+        hand = hand or self.hand
+        if self.contact_mode and touch_enabled():
+            # Contact mode: the tip's own surface point, no ray cast. A lifted primary brush is off the surface.
+            contact = optional("contact")
+            try:
+                found = contact.surface_for(hand, self.obj) if contact is not None else None
+            except Exception:
+                found = None
+            if found is not None:
+                return np.array(found[0], dtype=np.float64), np.array(found[1], dtype=np.float64)
+            if hand == self.hand:
+                return None
         origin, direction, _rotation = _pose_ray(pose)
         inverse = self.obj.matrix_world.inverted()
         if len(self.current) > DENSE_RAY_VERTICES:
@@ -542,9 +777,15 @@ class SculptStroke(_Stroke):
             # (one BVH, microseconds per sample); a live ray cast re-evaluates the whole mesh
             # (~130 ms at 164k vertices). Small meshes keep the live surface. Upgrade: refit the BVH.
             if self.bvh is None:
-                from mathutils.bvhtree import BVHTree
-                context.view_layer.update()
-                self.bvh = BVHTree.FromObject(self.obj, context.evaluated_depsgraph_get())
+                contact = optional("contact")
+                try:
+                    self.bvh = contact.bvh_for(context, self.obj) if contact is not None else None  # Cached, local space.
+                except Exception:
+                    self.bvh = None
+                if self.bvh is None:
+                    from mathutils.bvhtree import BVHTree
+                    context.view_layer.update()
+                    self.bvh = BVHTree.FromObject(self.obj, context.evaluated_depsgraph_get())
             location, normal, _index, _distance = self.bvh.ray_cast(
                 inverse @ origin, (inverse.to_3x3() @ direction).normalized())
             hit = location is not None
@@ -583,7 +824,7 @@ class SculptStroke(_Stroke):
             return EditResult(Decision.REJECTED, "Controller position is outside Blender's finite range")
         source = self.secondary.get(key)
         if source is None:
-            surface = self._surface_hit(context, sample.pose)
+            surface = self._surface_hit(context, sample.pose, hand=owner.identifier)
             if surface is None:
                 return EditResult(Decision.REJECTED, "Aim the second brush at the surface")
             source = _Source(owner, position, surface[0])
@@ -628,6 +869,8 @@ class SculptStroke(_Stroke):
             self._write_due(ids)
         if np.any(np.abs(delta) > 1.0e-9):
             self.changed = True
+        if primary:  # A line from the grab point to the hand shows the tension.
+            self._preview("tape", start=tuple(self.start_hit), end=tuple(position))
         return f"Grab {np.linalg.norm(delta) / self.units * 100:.1f} cm{self.rate_note}"
 
     def _run(self, context, source, pose):
@@ -641,7 +884,15 @@ class SculptStroke(_Stroke):
         if not primary:
             source.last = position
         step = float(np.linalg.norm(delta))
-        if step <= 1.0e-9 and tool != "sculpt_layer":
+        now = time.monotonic()
+        dt = min(0.1, max(1.0e-3, now - self.clock)) if primary else 0.0
+        if primary:
+            self.clock = now
+        touch = current_contact(self.hand) if primary and self.contact_mode else None
+        pressed = touch is not None and touch.pressed
+        # Press-to-build: Clay and Inflate pushed into the surface and held still keep raising it.
+        build = pressed and tool in {"sculpt_clay", "sculpt_inflate"}
+        if step <= 1.0e-9 and tool != "sculpt_layer" and not build:
             return "Move the hand to sculpt"
         normal = self.normal
         if tool == "sculpt_snake":
@@ -649,10 +900,13 @@ class SculptStroke(_Stroke):
             step = float(np.linalg.norm(delta))
             centre = source.centre
         else:
-            surface = self._surface_hit(context, pose)
+            surface = self._surface_hit(context, pose, hand=None if primary else source.owner.identifier)
             if surface is None:
                 return "Brush is off the surface"
             centre, normal = surface
+            self.normal = normal
+        if build:
+            step = max(step, sculpt_math.press_floor(dt, self.units))
         force = self.strength * self.pressure
         moved, pending = [], []
         everything = slice(None)
@@ -677,12 +931,16 @@ class SculptStroke(_Stroke):
             elif tool == "sculpt_flatten":
                 # Pull bumps and dents toward the average plane under the brush
                 # (like Blender's Flatten): the peak moves, not just the sides.
+                # Pressed in contact mode the paddle's own plane (through the contact point) is the target.
                 factor = min(1.0, 2.0 * step / self.radius) * force
-                plane = np.average(pts, axis=0, weights=w)
+                plane = c if pressed else np.average(pts, axis=0, weights=w)
                 pts -= (w * factor * ((pts - plane) @ n))[:, None] * n
             elif tool == "sculpt_smooth":
                 average = sculpt_math.smooth_average(self.current, ids, self.edges)
-                pts += (w * (min(1.0, 2.0 * step / self.radius) * force))[:, None] * (average - pts)
+                rub = 1.0
+                if touch is not None and dt > 0.0:  # Rubbing faster smooths more.
+                    rub = sculpt_math.smooth_speed_factor(step / dt, 0.3 * self.units)
+                pts += (w * (min(1.0, 2.0 * step / self.radius) * force * rub))[:, None] * (average - pts)
             elif tool == "sculpt_snake":
                 sculpt_math.snake(pts, everything, w, c, rot @ delta, force, self.radius)
             elif tool == "sculpt_inflate":
@@ -713,11 +971,167 @@ class SculptStroke(_Stroke):
             self.chunks.refresh(self.current, ids)
             self._write_due(ids)
         self.changed = True
+        if primary:
+            self._feedback(centre, normal, step, force)
         return f"{self.label}: {int(sum(len(i) for i in moved))} vertices{self.rate_note}"
+
+    def _feedback(self, centre, normal, step, force):
+        """Live effect preview and crumbs for the contact engine's feel module (no-ops without it)."""
+        tool = self.tool
+        if tool in {"sculpt_clay", "sculpt_inflate"}:
+            self._preview("bowl", point=tuple(centre), normal=tuple(normal), radius=self.radius,
+                          step=force * self.radius * 0.25 * self.sign)
+        elif tool == "sculpt_layer":
+            self._preview("plateau", point=tuple(centre), normal=tuple(normal), radius=self.radius,
+                          height=self.height)
+        elif tool == "sculpt_snake":
+            self._preview("tape", start=tuple(self.start_hit), end=tuple(centre))  # Start to the hook.
+        elif tool == "sculpt_crease":
+            self.chip_path += step
+            if self.chip_path >= 0.01 * self.units:  # 2-4 crumbs per 10 mm of path.
+                self.chip_path = 0.0
+                feel_call("chips", tuple(centre), tuple(normal), 3, object_colour(self.obj), self.units)
 
     def commit_message(self):
         extra = f", detail +{self.refined:,} vertices" if self.refined else ""
         return f"{self.label} committed as one undo step{extra}"
+
+
+class StampStroke(SculptStroke):
+    """Place tool in STAMP mode: press the shape's footprint into a mesh (Dig: emboss it).
+
+    Vertices inside the footprint sink along the first contact normal by pressure x 5 mm x strength, softened
+    over the first tenth of the stamp's size at its edge; the deepest push per vertex wins, as Layer does.
+    ponytail: ignores mirror and radial symmetry, and a curved surface gets a flat-bottomed press along
+    the first normal. Upgrade: press along each vertex's own normal.
+    """
+
+    def __init__(self, context, obj, hit, normal, pose, kind, owner, generation, units, settings):
+        super().__init__(context, obj, hit, normal, pose, "stamp", owner, generation, units, settings,
+                         label=f"Stamp {PLACE_SHAPES[kind][0]}")
+        label, _icon, size = PLACE_SHAPES[kind]
+        self.footprint = STAMP_KINDS.get(kind, "SQUARE")
+        self.half = (0.5 * size[0] * units, 0.5 * size[1] * units)
+        # Torus: the ring's inner radius as a share of the outer (major - minor over major + minor).
+        self.inner = max(0.0, (size[0] - 2.0 * size[2]) / size[0]) if kind == "TORUS" else 0.0
+        self.size_m = max(size[0], size[1]) * units
+        self.press_n = np.array(normal, dtype=np.float64)
+        self.press_n /= max(np.linalg.norm(self.press_n), 1.0e-12)
+        hand_x = np.array(Quaternion(pose.rotation).normalized() @ Vector((1.0, 0.0, 0.0)))
+        u = hand_x - (hand_x @ self.press_n) * self.press_n
+        if np.linalg.norm(u) < 1.0e-6:
+            u = np.cross(self.press_n, (0.0, 0.0, 1.0) if abs(self.press_n[2]) < 0.9 else (1.0, 0.0, 0.0))
+        self.axis_u = u / np.linalg.norm(u)
+        self.axis_v = np.cross(self.press_n, self.axis_u)
+        self.disp = np.zeros(len(self.current))
+        self.reach = float(np.hypot(*self.half)) + 0.01 * units
+
+    def _run(self, context, source, pose):
+        primary = source is self.primary
+        surface = self._surface_hit(context, pose, hand=None if primary else source.owner.identifier)
+        if surface is None:
+            return "Stamp is off the surface"
+        centre, self.normal = surface
+        ids = self.chunks.candidates(centre, self.reach)
+        if ids.size == 0:
+            return "No vertices under the stamp"
+        offset = self.start_world[ids] - centre
+        xy = np.stack((offset @ self.axis_u, offset @ self.axis_v), axis=1)
+        inside = sculpt_math.stamp_footprint(self.footprint, xy, self.half, self.inner)
+        keep = (inside >= 0.0) & (np.abs(offset @ self.press_n) < self.reach)
+        if not keep.any():
+            return "No vertices under the stamp"
+        ids, edge = ids[keep], inside[keep]
+        weight = sculpt_math.edge_soft(edge / (0.1 * self.size_m))
+        if self.mask is not None:
+            weight = weight * (1.0 - self.mask[ids])
+        # Pressing in moves vertices against the normal; Dig (invert) embosses outward.
+        push = -self.sign * weight * STAMP_DEPTH_M * self.units * self.strength * self.pressure
+        deeper = np.abs(push) > np.abs(self.disp[ids])
+        self.disp[ids[deeper]] = push[deeper]
+        self.current[ids] = self.start_world[ids] + self.disp[ids, None] * self.press_n
+        self.touched[ids] = True
+        self.chunks.refresh(self.current, ids)
+        self._write_due(ids)
+        self.changed = True
+        if primary:
+            # ponytail: the footprint shows as a round ring of its outer radius, whatever the shape.
+            self._preview("plateau", point=tuple(centre), normal=tuple(self.press_n), radius=max(self.half),
+                          height=0.0)
+        return f"{self.label}: {len(ids)} vertices{self.rate_note}"
+
+
+class MaskExtractStroke(_Stroke):
+    """Mask Extract as a tool: hold on a masked mesh and pull the hand away along the surface normal to set the
+    shell's thickness (1 cm of hand = 1 mm of shell, 0.5-50 mm, a detent per mm). Release makes the shell."""
+
+    label = "Mask Extract"
+
+    def __init__(self, context, pose, obj, normal, owner, generation, units, settings):
+        super().__init__(context, pose, owner, generation, units)
+        require_mesh_target(context, obj, "Mask Extract")
+        if is_swatch(obj):
+            raise editing.EditRejected("Material blocks are not extracted")
+        if read_mask(obj.data) is None:
+            raise editing.EditRejected("Paint a mask first")
+        self.obj = obj
+        self.normal = Vector(normal).normalized()
+        self.start_mm = float(_opt(settings, "mask_extract_m", 0.004)) * 1000.0
+        self.mm = sculpt_math.extract_thickness_mm(self.start_mm, 0.0)
+        self.selection = editing._selection_snapshot(context)
+        self.new_obj = None
+        self.pressure = 1.0
+
+    def _valid(self, context):
+        try:
+            return super()._valid(context) and self.obj.name in context.view_layer.objects
+        except ReferenceError:
+            return False
+
+    def _restore(self, context):
+        if self.new_obj is None:
+            return
+        try:
+            mesh = self.new_obj.data
+            bpy.data.objects.remove(self.new_obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+        except ReferenceError:
+            pass
+        self.new_obj = None
+        editing._restore_object_selection(context, self.selection)
+
+    def _apply(self, context, pose):
+        along = (Vector(pose.position) - self.anchor).dot(self.normal) / self.units
+        mm = sculpt_math.extract_thickness_mm(self.start_mm, along)
+        if mm != self.mm:
+            self.mm = mm
+            self._fx("detent")
+            self._fx("click")
+        self.changed = True
+        self._preview("plateau", point=tuple(self.anchor), normal=tuple(self.normal), radius=0.03 * self.units,
+                      height=self.mm / 1000.0 * self.units)  # The ring floats at the shell thickness.
+        return f"Shell {self.mm:g} mm: release to extract"
+
+    def commit(self, context, owner=None):
+        editing._require_main_thread()
+        if (self.changed and editing.active_transaction() is self and not self.finished
+                and self.new_obj is None
+                and self.capture.can_finish(owner or self.request.owner).decision is Decision.APPLY
+                and self._valid(context)):
+            try:
+                self.new_obj = extract_masked(context, self.obj, self.mm / 1000.0)
+            except (editing.EditRejected, RuntimeError, ValueError) as exc:
+                self._restore(context)
+                self._finish(CapturePhase.CANCELLED)
+                return EditResult(Decision.REJECTED, str(exc))
+        result = super().commit(context, owner)
+        if self.new_obj is not None and self.finished and result.decision is Decision.APPLY:
+            self.flash(self.new_obj)
+        return result
+
+    def commit_message(self):
+        return f"Extracted {len(self.new_obj.data.polygons):,} faces into {self.new_obj.name}"
 
 
 class SprayStroke(_Stroke):
@@ -731,6 +1145,8 @@ class SprayStroke(_Stroke):
         self.radius = max(1.0e-6, float(settings.spray_radius_m) * units)
         self.pressure = 1.0  # A harder squeeze widens the spray (50-100% of Spray Size).
         self.targets = {}
+        self.last_obj = None
+        self.sprayed = 0
 
     def _record(self, context, obj):
         key = editing._safe_pointer(obj)
@@ -745,6 +1161,9 @@ class SprayStroke(_Stroke):
         if any(slot.link != "DATA" for slot in obj.material_slots):
             self.targets[key] = None
             return None
+        if not len(mesh.polygons):
+            self.targets[key] = None
+            return None
         indices = np.empty(len(mesh.polygons), dtype=np.int32)
         mesh.polygons.foreach_get("material_index", indices)
         centres = np.empty(len(mesh.polygons) * 3, dtype=np.float32)
@@ -752,7 +1171,8 @@ class SprayStroke(_Stroke):
         world = _matrix(obj)
         centres = centres.reshape(-1, 3).astype(np.float64) @ world[:3, :3].T + world[:3, 3]
         record = {"obj": obj, "mesh": mesh, "original": indices, "current": indices.copy(),
-                  "centres": centres, "slots": len(mesh.materials), "slot": None,
+                  "centres": centres, "chunks": sculpt_math.Chunks(centres),
+                  "slots": len(mesh.materials), "slot": None,
                   "exact_faces": not any(m.show_viewport for m in obj.modifiers)}
         self.targets[key] = record
         return record
@@ -792,23 +1212,73 @@ class SprayStroke(_Stroke):
                 mesh.materials.pop()
             mesh.update()
 
+    def _spots(self, context, obj, origin, direction, aim_point, aim_index, touch):
+        """(world point, face index, distance from the nozzle) for the aim, the contact and the cone's rays."""
+        radius = self.radius * (0.5 + 0.5 * self.pressure)
+        half = math.atan(radius / (SPRAY_NOZZLE_M * self.units))
+        spots = [(aim_point, aim_index, (aim_point - origin).length)]
+        if touch is not None and touch.obj_name == obj.name:
+            spots.append((Vector(touch.point), int(touch.face_index), max(0.0, -touch.depth_m) * self.units))
+        self.frame = getattr(self, "frame", 0) + 1
+        far = 50.0 * self.units
+        # A pressed nozzle is inside the surface: cast from 3 cm behind it so the cone sees the surface ahead.
+        back = REACH_M * self.units if touch is not None else 0.0
+        start = origin - Vector(direction) * back
+        for ray in sculpt_math.cone_directions(tuple(direction), half, SPRAY_RAYS, self.frame * 0.7):
+            found = ray_object(context, obj, start, Vector(ray), far)
+            if found is not None:
+                spots.append((found[0], found[2], abs((found[0] - start).length - back)))
+        return spots, half
+
+    def paint_faces(self, record, spots, half):
+        """Face mask for the spray: each spot's own face plus faces whose centres are within a
+        fraction of the cone's cross-section there. One chunked gather over the whole cone footprint,
+        then a squared-distance test per spot (no sqrt, no full scan)."""
+        faces = np.zeros(len(record["centres"]), dtype=bool)
+        minimum = SPRAY_MIN_DISTANCE_M * self.units
+        points = np.array([tuple(point) for point, _i, _d in spots], dtype=np.float64)
+        spot = np.array([SPOT_FRACTION * sculpt_math.spray_spot(distance, half, minimum)
+                         for _p, _i, distance in spots])
+        if record["exact_faces"]:
+            for _point, index, _distance in spots:
+                if 0 <= index < len(faces):
+                    faces[index] = True
+        middle = points.mean(axis=0)
+        reach = float((np.linalg.norm(points - middle, axis=1) + spot).max())
+        for start, stop in record["chunks"].spans(middle, reach):
+            centres = record["centres"][start:stop]  # A contiguous slice: no gather.
+            offset = centres - middle  # Chunks are boxes: trim to the footprint disc before the per-spot tests.
+            disc = np.flatnonzero(np.einsum("ij,ij->i", offset, offset) <= reach * reach)
+            if not disc.size:
+                continue
+            centres = centres[disc]
+            near = np.zeros(len(disc), dtype=bool)
+            for at, radius in zip(points, spot):
+                offset = centres - at
+                near |= np.einsum("ij,ij->i", offset, offset) <= radius * radius
+            faces[disc[near] + start] = True
+        return faces
+
     def _apply(self, context, pose):
         origin, direction, _rotation = _pose_ray(pose)
-        context.view_layer.update()
-        hit, location, _normal, index, obj, _matrix_hit = context.scene.ray_cast(
-            context.evaluated_depsgraph_get(), origin, direction)
-        if not hit or obj is None:
+        aim = aim_hit(context, pose, self.hand, self.contact_mode, last=self.last_obj)
+        if aim is None:
             return "Aim the spray at a mesh"
-        obj = obj.original
+        obj, location, normal, index = aim
         if is_swatch(obj):
             return "Spray passes over material blocks"
         record = self._record(context, obj)
         if record is None:
             return f"{obj.name} cannot be sprayed (linked, shared or object-linked materials)"
-        distance = np.linalg.norm(record["centres"] - np.array(location), axis=1)
-        faces = distance <= self.radius * (0.5 + 0.5 * self.pressure)
-        if record["exact_faces"] and 0 <= index < len(faces):
-            faces[index] = True
+        self.last_obj = obj
+        touch = current_contact(self.hand) if self.contact_mode else None
+        spots, half = self._spots(context, obj, origin, direction, location, index, touch)
+        faces = self.paint_faces(record, spots, half)
+        reach = (location - origin).length
+        self._preview("cone", nozzle=tuple(origin), point=tuple(location), normal=tuple(normal),
+                      radius=sculpt_math.spray_spot(reach, half, SPRAY_MIN_DISTANCE_M * self.units))
+        feel_call("chips", tuple(location), tuple(normal), 1, tuple(self.material.diffuse_color), self.units,
+                  None, True)  # One tiny mist crumb per sample.
         slot = self._slot(record)
         if not np.any(record["current"][faces] != slot):
             return f"Spraying {self.material.name}"
@@ -835,6 +1305,7 @@ class ScrubStroke(_Stroke):
         self.start_frame = context.scene.frame_current
         self.axis = Quaternion(pose.rotation).normalized() @ Vector((1.0, 0.0, 0.0))
         self.frames_per_metre = float(settings.scrub_frames_per_m)
+        self.last_tick = 0.0
 
     def _restore(self, context):
         self.scene.frame_set(self.start_frame)
@@ -844,6 +1315,12 @@ class ScrubStroke(_Stroke):
         frame = max(0, self.start_frame + int(round(metres * self.frames_per_metre)))
         if frame != self.scene.frame_current:
             self.scene.frame_set(frame)
+            now = time.monotonic()
+            if now - self.last_tick >= 0.03:  # A haptic tick per frame crossed, at most every 30 ms.
+                self.last_tick = now
+                self._fx("detent")
+            if frame % 10 == 0:
+                self._fx("click")
         self.changed = frame != self.start_frame
         return f"Frame {frame}"
 
@@ -923,6 +1400,7 @@ def _retopo_pull(context, obj, hand):
     settings = context.window_manager.xrwb_settings
     name, target, quality = obj.name, int(settings.retopo_faces), str(settings.retopo_quality)
     interaction_log.emit("retopo", " ".join(retopo.card_lines({"state": "running"})), context, hand=hand)
+    feel_event(hand, "click")
 
     def run():
         from . import controllers, ui
@@ -934,6 +1412,13 @@ def _retopo_pull(context, obj, hand):
             interaction_log.emit("retopo", " · ".join(retopo.card_lines(card)), ctx, hand=hand,
                                  level="INFO" if card.get("ok") else "WARNING")
             controllers.pulse(ctx, hand, "commit" if card.get("ok") else "reject")
+            if card.get("ok"):  # Thunk and brackets on the new object; otherwise the quiet reject click.
+                feel_event(hand, "thunk")
+                made = bpy.data.objects.get(card.get("name", ""))
+                if made is not None:
+                    feel_call("flash", None, bracket_lines(made))
+            else:
+                feel_event(hand, "reject")
         return None
 
     bpy.app.timers.register(run, first_interval=0.05)  # One frame for the card to show.
@@ -1017,8 +1502,11 @@ class PlaceStroke(_Stroke):
 
     label = "Place"
 
-    def __init__(self, context, pose, kind, owner, generation, units):
+    def __init__(self, context, pose, kind, owner, generation, units, contact=None):
         super().__init__(context, pose, owner, generation, units)
+        self.contact_mode = contact is not None
+        if contact is not None:
+            self._rest = (Vector(contact.point), Vector(contact.normal))
         if kind not in PLACE_SHAPES:
             raise editing.EditRejected("Unknown shape")
         collection = context.collection
@@ -1040,6 +1528,13 @@ class PlaceStroke(_Stroke):
         self.changed = True
 
     def _move(self, context, pose):
+        rest = rest_contact(self, {self.obj.name})
+        if rest is not None:  # Touching: rest on the contact point, local Z along the surface normal.
+            location, rotation = contact_frame(rest[0], rest[1], self.dimensions, hand_yaw(pose), self.units)
+            self.obj.matrix_world = Matrix.Translation(location) @ rotation.to_matrix().to_4x4()
+            self._preview("plateau", point=tuple(rest[0]), normal=tuple(rest[1]),
+                          radius=0.5 * max(self.dimensions), height=0.0)  # Outline of the shape on the surface.
+            return
         origin, direction, _rotation = _pose_ray(pose)
         location, yaw, _hit = placement(context, origin, direction, self.dimensions, exclude=self.obj)
         self.obj.matrix_world = Matrix.Translation(location) @ yaw.to_matrix().to_4x4()
@@ -1067,6 +1562,12 @@ class PlaceStroke(_Stroke):
     def commit_message(self):
         return f"{self.obj_name} placed as one undo step"
 
+    def commit(self, context, owner=None):
+        result = super().commit(context, owner)
+        if self.capture.finished and result.decision is Decision.APPLY and self.changed:
+            self.flash(self.obj)  # The drop's thunk is the commit event the controller plays.
+        return result
+
 
 class MeasureStroke(_Stroke):
     """Tape measure: hold from one point to another; nothing in the scene changes."""
@@ -1074,15 +1575,39 @@ class MeasureStroke(_Stroke):
     label = "Measure"
     needs_undo = False
 
-    def __init__(self, context, pose, owner, generation, units):
+    def __init__(self, context, pose, owner, generation, units, contact=None):
         super().__init__(context, pose, owner, generation, units)
+        self.contact_mode = contact is not None
+        self.snap = None
         self.start = self._point(context, pose)
         self.end = self.start.copy()
         self.ticks = 0
         self.changed = True  # A measurement is the result, even at zero length.
 
+    def _snapped(self, found):
+        """The touched face's nearest vertex within 1 cm (base mesh only), else the contact point."""
+        point = Vector(found.point)
+        obj = bpy.data.objects.get(found.obj_name)
+        if (obj is None or obj.type != "MESH" or any(m.show_viewport for m in obj.modifiers)
+                or not 0 <= found.face_index < len(obj.data.polygons)):
+            self.snap = None
+            return point
+        world, best, best_index = obj.matrix_world, SNAP_M * self.units, None
+        for index in obj.data.polygons[found.face_index].vertices:
+            corner = world @ obj.data.vertices[index].co
+            if (corner - point).length <= best:
+                best, best_index, point = (corner - point).length, index, corner
+        if best_index != self.snap:
+            self.snap = best_index
+            if best_index is not None:
+                self._fx("touch", 0.5)  # A tap where the tape snaps.
+        return point
+
     def _point(self, context, pose):
-        """Where the ray meets a surface, else 20 cm ahead of the controller tip."""
+        """The touched surface point (snapped to a vertex), else where the ray meets a surface, else 20 cm ahead."""
+        found = current_contact(self.hand)
+        if found is not None:
+            return self._snapped(found)
         origin, direction, _rotation = _pose_ray(pose)
         hit, location, _normal, _index, _obj, _matrix = context.scene.ray_cast(
             context.evaluated_depsgraph_get(), origin, direction, distance=50.0 * self.units)
@@ -1105,17 +1630,37 @@ class MeasureStroke(_Stroke):
         if ticks != self.ticks:
             from . import controllers
             controllers.pulse(context, self.request.owner.identifier, "tick")  # Every 10 cm.
+            self._fx("click")
             self.ticks = ticks
+        # The tape band: from the hand's tape housing out to the start, with the live end.
+        self._preview("tape", start=tuple(self.start), end=tuple(self.end), hand=tuple(pose.position))
         return self.text()
 
     def commit_message(self):
         return "Measured " + self.text()
 
 
+def scene_target(context, origin, direction, contact):
+    """(object, world point, world normal, face index) the stroke starts on: the touched surface in
+    contact mode, else what the ray meets. (None, None, None, -1) when there is nothing."""
+    if contact is not None:
+        obj = bpy.data.objects.get(contact.obj_name)
+        if obj is not None:
+            return obj, Vector(contact.point), Vector(contact.normal), int(contact.face_index)
+    context.view_layer.update()
+    hit, location, normal, index, evaluated, _matrix = context.scene.ray_cast(
+        context.evaluated_depsgraph_get(), origin, direction)
+    if hit and evaluated is not None:
+        return evaluated.original, Vector(location), Vector(normal), index
+    return None, None, None, -1
+
+
 def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, target_generation=0):
     """Start a physical stroke, or return None after an instant action (dipping a swatch)."""
     editing._require_main_thread()
-    if tool not in TOOLS:
+    contact_tools = optional("contact_tools")
+    new_tool = contact_tools is not None and tool in getattr(contact_tools, "TOOLS", ())
+    if tool not in TOOLS and not new_tool:
         raise editing.EditRejected("Unknown physical tool")
     if editing.active_transaction() is not None:
         raise editing.EditRejected("Another edit owns capture")
@@ -1124,7 +1669,7 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
     if (not all(math.isfinite(value) for value in Vector(pose.position))
             or not math.isfinite(rotation.magnitude) or rotation.magnitude < 1.0e-8):
         raise editing.EditRejected("Controller pose is outside Blender's finite range")
-    if tool not in {"scrub_time", "measure"} and (not editing.undo_available(context)
+    if tool not in {"scrub_time", "measure", "eyedropper"} and (not editing.undo_available(context)
                                                   or not bpy.ops.ed.undo_push.poll()):
         raise editing.EditRejected("Enable Global Undo and at least one undo step")
     if context.mode != "OBJECT":
@@ -1132,38 +1677,58 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
     owner = owner or CaptureOwner(InputProvenance.CONTROLLER, "/user/hand/right", 0)
     settings = context.window_manager.xrwb_settings
     units = viewer_scale.world_units_per_metre(context)
+    # Contact mode: the tip touches a mesh, so the stroke starts at the tip, not along the ray.
+    contact = current_contact(owner.identifier) if tool not in {"scrub_time", "lab_dial"} else None
+    if new_tool:
+        transaction = contact_tools.begin(context, pose, tool, owner, target_generation, units, settings)
+        if transaction is not None and editing.active_transaction() is not transaction:
+            editing._ACTIVE_TRANSACTION = transaction
+        return transaction
     if tool == "lab_dial":
         from . import subdiv_lab
-        return subdiv_lab.begin(context, pose, owner, target_generation)
+        touched = current_contact(owner.identifier)
+        return subdiv_lab.begin(context, pose, owner, target_generation,
+                                obj=bpy.data.objects.get(touched.obj_name) if touched is not None else None)
     if tool == "grow_seed":
         from . import growth
-        return growth.begin(context, pose, owner, target_generation)
+        return _contact_begin(growth.begin(context, pose, owner, target_generation, contact=contact), contact)
     if tool == "scrub_time":
         transaction = ScrubStroke(context, pose, owner, target_generation, units, settings)
     elif tool == "uv_island":
         from . import uv_tools
-        transaction = uv_tools.begin(context, pose, owner, target_generation)
+        transaction = uv_tools.begin(context, pose, owner, target_generation, contact=contact)
     elif tool == "measure":
-        transaction = MeasureStroke(context, pose, owner, target_generation, units)
+        transaction = MeasureStroke(context, pose, owner, target_generation, units, contact=contact)
     elif tool == "place_prefab":
         from . import prefabs
-        transaction = prefabs.PrefabStroke(context, pose, str(settings.prefab_kind), owner, target_generation, units)
+        transaction = prefabs.PrefabStroke(context, pose, str(settings.prefab_kind), owner, target_generation, units,
+                                           contact=contact)
     elif tool == "sdf_blob":
         from . import sdf_modeling
-        return sdf_modeling.begin(context, pose, owner, target_generation)
+        return _contact_begin(sdf_modeling.begin(context, pose, owner, target_generation, contact=contact), contact)
     elif tool in {"draw_curve", "paint_vertex"}:
         from . import creative_tools
-        transaction = creative_tools.begin(context, tool, pose, owner, target_generation, units, settings)
+        transaction = creative_tools.begin(context, tool, pose, owner, target_generation, units, settings,
+                                           contact=contact)
         if tool == "paint_vertex":
             return transaction  # Already owns capture and painted the first dab.
+    elif tool == "place_object" and str(_opt(settings, "place_mode", "PLACE")) == "STAMP":
+        origin, direction, _rotation = _pose_ray(pose)
+        obj, location, normal, _index = scene_target(context, origin, direction, contact)
+        if obj is None:
+            raise editing.EditRejected("Point the stamp at a mesh")
+        if is_swatch(obj):
+            raise editing.EditRejected("Material blocks are not stampable")
+        require_mesh_target(context, obj, "Stamp")
+        transaction = StampStroke(context, obj, location, normal, pose, str(settings.place_kind), owner,
+                                  target_generation, units, settings)
+        transaction.contact_mode = contact is not None
     elif tool == "place_object":
-        transaction = PlaceStroke(context, pose, str(settings.place_kind), owner, target_generation, units)
+        transaction = PlaceStroke(context, pose, str(settings.place_kind), owner, target_generation, units,
+                                  contact=contact)
     else:
         origin, direction, _rotation = _pose_ray(pose)
-        context.view_layer.update()
-        hit, location, normal, _index, evaluated, _matrix_hit = context.scene.ray_cast(
-            context.evaluated_depsgraph_get(), origin, direction)
-        obj = evaluated.original if hit and evaluated is not None else None
+        obj, location, normal, _index = scene_target(context, origin, direction, contact)
         if (tool in DIAL_TOOLS and owner.identifier == off_hand()
                 and (obj is None or (Vector(location) - origin).length > DIAL_REACH_M * units)):
             transaction = BrushDialStroke(context, pose, owner, target_generation, units, settings, tool)
@@ -1172,7 +1737,19 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
         if tool == "retopo_loom":
             return _retopo_pull(context, obj, owner.identifier)
         if tool == "eyedropper":
-            return _eyedrop(context, obj, _index)
+            if obj is None:
+                raise editing.EditRejected("Point at something with a material")
+            transaction = EyedropStroke(context, pose, obj, _index, owner, target_generation, units,
+                                        contact=contact)
+            editing._ACTIVE_TRANSACTION = transaction
+            return transaction
+        if tool == "mask_extract":
+            if obj is None:
+                raise editing.EditRejected("Aim at a masked mesh")
+            transaction = MaskExtractStroke(context, pose, obj, normal, owner, target_generation, units, settings)
+            transaction.contact_mode = contact is not None
+            editing._ACTIVE_TRANSACTION = transaction
+            return transaction
         if tool == "spray_material":
             if is_swatch(obj):
                 from . import materials_lab
@@ -1182,6 +1759,7 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
             if material is None:
                 raise editing.EditRejected("Choose a spray material: trigger a material block or a Paint button")
             transaction = SprayStroke(context, pose, material, owner, target_generation, units, settings)
+            transaction.contact_mode = contact is not None
             editing._ACTIVE_TRANSACTION = transaction
             # Paint immediately under the nozzle; later samples go through capture rules.
             transaction._apply(context, pose)
@@ -1193,12 +1771,90 @@ def begin(context, pose_origin, pose_rotation, tool="sculpt_clay", owner=None, t
         require_mesh_target(context, obj, "Sculpt")
         transaction = SculptStroke(context, obj, location, normal, pose, tool, owner,
                                    target_generation, units, settings)
+    transaction.contact_mode = contact is not None
     editing._ACTIVE_TRANSACTION = transaction
     return transaction
 
 
+def _contact_begin(transaction, contact):
+    """Mark a stroke a sibling module began (and registered) as a contact-mode stroke."""
+    if transaction is not None:
+        transaction.contact_mode = contact is not None
+    return transaction
+
+
+def material_at(obj, face_index):
+    """The material under a hit: a swatch block's own, else the face's slot, else the object's active one."""
+    block = swatch_of(obj)
+    if block is not None:
+        return bpy.data.materials.get(block.get(SWATCH_KEY, ""))
+    material = None
+    if obj.type == "MESH" and not any(m.show_viewport for m in obj.modifiers) \
+            and 0 <= face_index < len(obj.data.polygons):
+        slot = obj.data.polygons[face_index].material_index
+        if slot < len(obj.material_slots):
+            material = obj.material_slots[slot].material
+    return material or obj.active_material
+
+
+class EyedropStroke(_Stroke):
+    """Hold to see what the bulb will pick (a swatch at the tip); the bulb squeezes with the trigger;
+    release picks. Pointing at nothing when you let go cancels. Settings only: no undo step."""
+
+    label = "Eyedropper"
+    needs_undo = False
+    feel_commit = False  # It plays its own click.
+
+    def __init__(self, context, pose, obj, index, owner, generation, units, contact=None):
+        super().__init__(context, pose, owner, generation, units)
+        self.contact_mode = contact is not None
+        self.pressure = 1.0  # The bulb squeezes with the trigger (ray_feedback reads this).
+        self.obj, self.index, self.material = obj, index, material_at(obj, index)
+        self.changed = True
+
+    def _restore(self, context):
+        pass  # Nothing is written until release.
+
+    def _apply(self, context, pose):
+        aim = aim_hit(context, pose, self.hand, self.contact_mode, last=self.obj)
+        if aim is None:
+            self.obj, self.index, material = None, -1, None
+        else:
+            self.obj, _point, _normal, self.index = aim
+            material = material_at(self.obj, self.index)
+        if getattr(material, "name", None) != getattr(self.material, "name", None):
+            self._fx("detent")  # A tick when the target material changes.
+        self.material = material
+        if material is not None:
+            _origin, direction, _rotation = _pose_ray(pose)
+            self._preview("swatch", colour=tuple(material.diffuse_color), point=tuple(pose.position),
+                          normal=tuple(-direction), radius=0.008 * self.units)
+        return f"Picking {material.name}" if material is not None else "Nothing to pick here"
+
+    def commit(self, context, owner=None):
+        editing._require_main_thread()
+        if editing.active_transaction() is not self or self.finished:
+            return EditResult(Decision.REJECTED, f"{self.label} does not own capture")
+        result = self.capture.can_finish(owner or self.request.owner)
+        if result.decision is Decision.CANCEL_REQUIRED:
+            self.cancel(context)
+        if result.decision is not Decision.APPLY:
+            return result
+        if self.obj is None or self.material is None:
+            self._finish(CapturePhase.CANCELLED)
+            return EditResult(Decision.REJECTED, "Eyedropper cancelled: nothing with a material under the tip")
+        try:
+            _eyedrop(context, self.obj, self.index)
+        except (editing.EditRejected, ReferenceError) as exc:
+            self._finish(CapturePhase.CANCELLED)
+            return EditResult(Decision.REJECTED, str(exc))
+        self._finish(CapturePhase.COMMITTED)
+        self._fx("click")
+        return EditResult(Decision.APPLY, f"Picked {self.material.name}; spray is loaded")
+
+
 def _eyedrop(context, obj, face_index):
-    """Load the material under the ray into the spray and switch to Spray. Instant."""
+    """Load the material under the hit into the spray and switch to Spray."""
     from . import interaction_log, materials_lab
 
     if obj is None:
@@ -1206,13 +1862,7 @@ def _eyedrop(context, obj, face_index):
     if is_swatch(obj):
         materials_lab.dip(context, swatch_of(obj))
     else:
-        material = None
-        if obj.type == "MESH" and not any(m.show_viewport for m in obj.modifiers) \
-                and 0 <= face_index < len(obj.data.polygons):
-            slot = obj.data.polygons[face_index].material_index
-            if slot < len(obj.material_slots):
-                material = obj.material_slots[slot].material
-        material = material or obj.active_material
+        material = material_at(obj, face_index)
         if material is None:
             raise editing.EditRejected(f"{obj.name} has no material to pick")
         context.window_manager.xrwb_settings.spray_material = material.name

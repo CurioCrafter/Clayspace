@@ -219,7 +219,8 @@ def check_materials(settings):
     # Eyedropper: trigger a painted face to load its material and switch to Spray.
     settings.edit_tool = "eyedropper"
     settings.spray_material = ""
-    assert physical_tools.begin(bpy.context, start, DOWN, tool="eyedropper", owner=OWNER) is None
+    picker = physical_tools.begin(bpy.context, start, DOWN, tool="eyedropper", owner=OWNER)  # 0.21: picks on release
+    assert picker.commit(bpy.context, OWNER).decision.value == "apply"
     assert settings.spray_material == "XR Neon" and settings.edit_tool == "spray_material", settings.spray_material
 
     undo_once()

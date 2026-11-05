@@ -549,8 +549,11 @@ class PrefabStroke(physical_tools._Stroke):
 
     label = "Place Prefab"
 
-    def __init__(self, context, pose, kind, owner, generation, units):
+    def __init__(self, context, pose, kind, owner, generation, units, contact=None):
         super().__init__(context, pose, owner, generation, units)
+        self.contact_mode = contact is not None
+        if contact is not None:
+            self._rest = (Vector(contact.point), Vector(contact.normal))
         collection = context.collection
         if collection is None or not collection.is_editable or collection.library:
             raise editing.EditRejected("Choose a local editable collection for the prefab")
@@ -583,10 +586,19 @@ class PrefabStroke(physical_tools._Stroke):
         self.changed = True
 
     def _move(self, context, pose):
-        origin, direction, _rotation = physical_tools._pose_ray(pose)
-        location, yaw, _hit = physical_tools.placement(context, origin, direction, self.dimensions,
-                                                       exclude=set(self.objects))
-        frame = Matrix.Translation(location) @ yaw.to_matrix().to_4x4()
+        rest = physical_tools.rest_contact(self, {obj.name for obj in self.objects})
+        if rest is not None:
+            # Touching: rest on the contact point. Only an upward-facing surface tilts the prefab with it,
+            # so furniture stays upright against a wall.
+            location, rotation = physical_tools.contact_frame(
+                rest[0], rest[1], self.dimensions, physical_tools.hand_yaw(pose), self.units,
+                align=rest[1].z > 0.5)
+            frame = Matrix.Translation(location) @ rotation.to_matrix().to_4x4()
+        else:
+            origin, direction, _rotation = physical_tools._pose_ray(pose)
+            location, yaw, _hit = physical_tools.placement(context, origin, direction, self.dimensions,
+                                                           exclude=set(self.objects))
+            frame = Matrix.Translation(location) @ yaw.to_matrix().to_4x4()
         for obj, offset in zip(self.objects, self.offsets):
             if obj.parent is None or obj.parent not in self.objects:
                 obj.matrix_world = frame @ offset
@@ -617,6 +629,12 @@ class PrefabStroke(physical_tools._Stroke):
 
     def commit_message(self):
         return f"{self.name} placed (one undo). Grab, recolour or edit it like anything else."
+
+    def commit(self, context, owner=None):
+        result = super().commit(context, owner)
+        if self.finished and result.decision is physical_tools.Decision.APPLY and self.changed:
+            self.flash(*self.objects)  # Brackets on the drop; the thunk is the controller's commit event.
+        return result
 
 
 # ---- Starter scenes ---------------------------------------------------------------

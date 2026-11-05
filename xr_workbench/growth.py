@@ -211,15 +211,20 @@ if bpy is not None:
 
         label = "Grow"
 
-        def __init__(self, context, pose, owner, generation, units, kind, seed):
+        def __init__(self, context, pose, owner, generation, units, kind, seed, contact=None):
             super().__init__(context, pose, owner, generation, units)
+            self.contact_mode = contact is not None
             self.kind, self.seed, self.units = kind, seed, units
             self.label = f"Grow {KINDS[kind]}"
             self.start_rotation = Quaternion(pose.rotation).normalized()
             origin, direction, _rotation = physical_tools._pose_ray(pose)
-            context.view_layer.update()
-            hit, location, normal, _index, evaluated, _matrix = context.scene.ray_cast(
-                context.evaluated_depsgraph_get(), origin, direction, distance=REACH_M * units)
+            touched = bpy.data.objects.get(contact.obj_name) if contact is not None else None
+            if touched is not None:  # Touching: plant the seed on the contact point, growing out along its normal.
+                hit, location, normal, evaluated = True, Vector(contact.point), Vector(contact.normal), touched
+            else:
+                context.view_layer.update()
+                hit, location, normal, _index, evaluated, _matrix = context.scene.ray_cast(
+                    context.evaluated_depsgraph_get(), origin, direction, distance=REACH_M * units)
             self.target = evaluated.original if hit and evaluated is not None else None
             if kind == "VINE":
                 if self.target is None or self.target.type != "MESH":
@@ -232,7 +237,7 @@ if bpy is not None:
             self.seed_point = tuple(location) if hit else tuple(pose.position)
             self.normal = tuple(normal) if hit else None
             self.selection = editing._selection_snapshot(context)
-            self.lines, self.pulse, self.detents = [], False, 0
+            self.lines, self.pulse, self.detents, self.segments = [], False, 0, 0
             self.created = None  # ("NEW", object name) or ("EXTEND", object name, spline count before)
             self._pull, self._roll = Vector(), 0.0
 
@@ -241,7 +246,14 @@ if bpy is not None:
             length = self._pull.length
             if length < MIN_PULL_M * self.units:
                 return []
-            direction = tuple(self._pull / length)
+            pull = Vector(self._pull)
+            if self.normal is not None and self.kind != "VINE":
+                # ponytail: the pull is reflected out of the surface so a branch always grows away from it; the
+                # contact normal is not blended in as a true initial tangent.
+                outward = pull.dot(Vector(self.normal))
+                if outward < 0.0:
+                    pull -= 2.0 * outward * Vector(self.normal)
+            direction = tuple(pull / length)
             roll = min(abs(self._roll) / (math.pi / 2.0), 1.0)
             turns = 1.0 + round(roll * 10.0) / 2.0  # 1..6 turns in half-turn steps.
             return generate(self.kind, self.seed_point, direction, length, roll, turns, self.seed,
@@ -255,6 +267,11 @@ if bpy is not None:
             self.pulse, self.detents = detents != self.detents, detents
             self.lines = self._recompute()
             self.changed = bool(self.lines)
+            count = sum(len(points) for points, _radii in self.lines)
+            if count > self.segments:  # A tick and a soft click for every new segment.
+                self._fx("detent", 0.5)
+                self._fx("click", 0.5)
+            self.segments = count
             return f"{KINDS[self.kind]}: {self._pull.length / self.units * 100:.0f} cm, release to grow"
 
         def reroll(self):
@@ -339,7 +356,7 @@ if bpy is not None:
         def commit_message(self):
             return f"{self.label} grown as one undo step"
 
-    def begin(context, pose, owner, generation):
+    def begin(context, pose, owner, generation, contact=None):
         """Start a Grow stroke (tool `grow_seed`) with the kind/seed in `STATE`."""
         if context.mode != "OBJECT":
             raise editing.EditRejected("Switch to Object Mode to grow")
@@ -348,7 +365,7 @@ if bpy is not None:
         if not editing.undo_available(context) or not bpy.ops.ed.undo_push.poll():
             raise editing.EditRejected("Enable Global Undo and at least one undo step")
         stroke = GrowStroke(context, pose, owner, generation, viewer_scale.world_units_per_metre(context),
-                            STATE["kind"], STATE["seed"])
+                            STATE["kind"], STATE["seed"], contact=contact)
         editing._ACTIVE_TRANSACTION = stroke
         return stroke
 

@@ -23,7 +23,10 @@ DEFAULTS = {"guide_done": False, "desktop_at_start": False, "haptic_strength": 0
             "two_hand": "SCALE_ROTATE", "menu_hand": "OFF",
             "locomotion": "SMOOTH", "fly": False, "grip_empty": "WORLD", "theme": "DEFAULT",
             "live_cage": True, "tool_props": True, "tool_belt": False,
-            "menu_open": "", "menu_pinned": "", "menu_compact": False}
+            "menu_open": "", "menu_pinned": "", "menu_compact": False,
+            # 0.21 touch tools (spec-0.21 section 0).
+            "touch_tools": True, "tool_sound_volume": 0.6, "tool_sound_mute": False,
+            "contact_texture": True, "contact_nudge": False}
 _cache: dict | None = None
 
 

@@ -46,8 +46,12 @@ GLASS = (0.82, 0.92, 0.96)
 CREAM = (0.93, 0.91, 0.85)
 RED = (0.80, 0.18, 0.15)
 GOLD = (0.86, 0.68, 0.30)
+BEECH = (0.80, 0.60, 0.38)
+CORK = (0.72, 0.53, 0.33)
+GRIT = (0.24, 0.21, 0.19)
 
 _parts: list = []  # (object, part, squeeze matrix or None)
+_spinning: set = set()  # Objects that turn with the prop's spin (the drill's chuck and bit).
 
 
 # ---- Modelling helpers ---------------------------------------------------------
@@ -63,6 +67,11 @@ def _obj(name, bm):
 
 def add(obj, part, squeeze=None):
     _parts.append((obj, part, squeeze))
+    return obj
+
+
+def spinning(obj):
+    _spinning.add(obj.name)
     return obj
 
 
@@ -251,7 +260,8 @@ def p_clay():
     loop = smooth_path([(0.006, 0.012, 0), (0.02, 0.035, 0), (0.024, 0.062, 0), (0.0, 0.088, 0),
                         (-0.024, 0.062, 0), (-0.02, 0.035, 0), (-0.006, 0.012, 0)], 5)
     ribbon = [(-1.0, -0.17), (1.0, -0.17), (1.0, 0.17), (-1.0, 0.17)]  # 12 mm tall, 2 mm thick.
-    sweep("Loop", loop, 0.006, 1, up=(0, 0, 1), profile=ribbon)
+    flex = about((0.0, 0.012, 0.0), Matrix.Diagonal((1.05, 1.0 - 0.003 / 0.0765, 1.0, 1.0)))  # 3 mm in.
+    sweep("Loop", loop, 0.006, 1, up=(0, 0, 1), profile=ribbon, squeeze=flex)
     return (0.0, 0.0885, 0.0), (WOOD, STEEL)
 
 
@@ -259,7 +269,8 @@ def p_smooth():
     lathe("Grip", [(0.0, -0.08), (0.009, -0.079), (0.0145, -0.07), (0.016, -0.045), (0.013, -0.02),
                    (0.0115, -0.004)], 14, 0)
     ferrule(0.008, -0.006, 0.0145)
-    sphere("Stone", 0.03, (0.0, 0.04, 0.0), 1, scale=(1.3, 1.08, 0.62), segments=18, rings=10)
+    press = about((0.0, 0.008, 0.0), Matrix.Diagonal((1.04, 1.0 - 0.003 / 0.064, 1.04, 1.0)))  # 3 mm in.
+    sphere("Stone", 0.03, (0.0, 0.04, 0.0), 1, scale=(1.3, 1.08, 0.62), segments=18, rings=10, squeeze=press)
     return (0.0, 0.0723, 0.0), (RUBBER, STONE)
 
 
@@ -367,6 +378,15 @@ def p_mask_extract():
     star = [tilt @ p + Vector((0.0, 0.04, 0.01)) for p in star]
     rim = [(-1.0, -0.13), (1.0, -0.13), (1.0, 0.13), (-1.0, 0.13)]  # 16 mm deep, 2 mm wall.
     sweep("Cutter", smooth_path(star, 2, closed=True), 0.008, 2, up=normal, closed=True, profile=rim)
+    # The ejector plate rests at the back of the cutter; the trigger pushes it 8 mm out.
+    centre = Vector((0.0, 0.04, 0.01))
+    plate = [centre + (q - centre) * 0.78 - normal * 0.007 for q in smooth_path(star, 2, closed=True)]
+    bm = bmesh.new()
+    face = bm.faces.new([bm.verts.new(p) for p in plate])
+    out = bmesh.ops.extrude_face_region(bm, geom=[face])
+    bmesh.ops.translate(bm, vec=normal * 0.002, verts=[g for g in out["geom"] if isinstance(g, bmesh.types.BMVert)])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    add(_obj("Ejector", bm), 1, Matrix.Translation(normal * 0.008))
     lathe("Boss", [(0.0, 0.024), (0.009, 0.024), (0.009, 0.036), (0.0, 0.036)], 12, 1)
     return (0.0, 0.044, 0.01), (WOOD, STEEL)
 
@@ -412,7 +432,13 @@ def p_scrub():
         lathe("Hub", [(0.0, 0.017), (0.011, 0.017), (0.011, 0.05), (0.0085, 0.053), (0.0, 0.053)], 14, 2)
         box("Tail", (0.02, 0.0016, 0.032), (0.0, 0.03, -0.045), 0, 0.0004)
         box("Pointer", (0.008, 0.006, 0.012), (0.0, 0.051, 0.041), 2, 0.0015)
+    first = len(_parts)
     lean = tilted((0.0, 0.012, 0.0), -40.0, reel)
+    turn = lean @ Matrix.Rotation(math.radians(36.0), 4, "Y") @ lean.inverted()  # Squeeze turns the reel.
+    for i in range(first, len(_parts)):
+        obj, part, _squeeze = _parts[i]
+        if obj.name.split(".")[0] in {"Flange", "Film", "Hub"}:
+            _parts[i] = (obj, part, turn)
     return tuple(lean @ Vector((0.0, 0.053, 0.0))), (RUBBER, STEEL)
 
 
@@ -470,6 +496,8 @@ def p_measure():
     tape = [(-0.0085, 0.022), (0.0085, 0.022), (0.0085, 0.064), (-0.0085, 0.064)]
     slab("Tape", tape, 0.0014, -0.0235, 1, 0.0003)
     box("Hook", (0.02, 0.0025, 0.012), (0, 0.065, -0.0275), 1, 0.0006)
+    box("Lock", (0.012, 0.016, 0.006), (0, 0.004, 0.033), 0, 0.0018,
+        squeeze=Matrix.Translation((0.0, 0.0, -0.002)))  # The lock button, 2 mm in.
     return (0.0, 0.0663, -0.0225), (RUBBER, STEEL)
 
 
@@ -529,8 +557,9 @@ def p_paint_vertex():
                      (0.009, -0.012)], 14, 0)
     lathe("Ferrule", [(0.0, -0.014), (0.0096, -0.014), (0.0096, -0.004), (0.0088, 0.0), (0.0092, 0.006),
                       (0.0088, 0.022), (0.0, 0.022)], 16, 1)
+    splay = about((0.0, 0.018, 0.0), Matrix.Diagonal((1.14, 1.0 - 0.003 / 0.059, 1.14, 1.0)))  # 3 mm in.
     lathe("Bristles", [(0.0, 0.018), (0.0088, 0.018), (0.0098, 0.03), (0.009, 0.046), (0.006, 0.062),
-                       (0.002, 0.074), (0.0, 0.077)], 16, 2)
+                       (0.002, 0.074), (0.0, 0.077)], 16, 2, squeeze=splay)
     return (0.0, 0.077, 0.0), (WOOD, STEEL)
 
 
@@ -637,6 +666,134 @@ def p_retopo_loom():
     return tuple(lean @ Vector((0.0, 0.0115, half))), (WOOD, STEEL)
 
 
+def _hull(name, points, part, bevel_w=0.0):
+    bm = bmesh.new()
+    for co in points:
+        bm.verts.new(co)
+    bmesh.ops.convex_hull(bm, input=bm.verts)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    obj = _obj(name, bm)
+    if bevel_w:
+        bevel(obj, bevel_w, 2)
+    return add(obj, part)
+
+
+def p_knife():
+    lathe("Handle", [(0.0, -0.1), (0.008, -0.099), (0.0125, -0.092), (0.0135, -0.062), (0.012, -0.032),
+                     (0.0135, -0.01), (0.0125, -0.002)], 14, 0, scale=(0.56, 1.0, 1.0))
+    lathe("Bolster", [(0.0, -0.004), (0.0125, -0.004), (0.0132, 0.002), (0.011, 0.01), (0.0, 0.01)], 14, 1,
+          scale=(0.6, 1.0, 1.0))
+    for y in (-0.082, -0.054, -0.026):
+        lathe("Rivet", [(0.0, -0.0082), (0.0028, -0.0082), (0.0028, 0.0082), (0.0, 0.0082)], 10, 2, axis="X",
+              centre=(0.0, y, 0.0))
+    spine = ((0.006, 0.011), (0.12, 0.009), (0.16, 0.0), (0.183, -0.011))  # (y, z): straight, then drops.
+    edge = ((0.006, -0.033), (0.06, -0.035), (0.12, -0.033), (0.16, -0.025), (0.184, -0.016))
+    _hull("Blade", [(x, y, z) for y, z in spine for x in (-0.0011, 0.0011)]
+          + [(x, y, z) for y, z in edge for x in (-0.0002, 0.0002)] + [(0.0, 0.19, -0.014)], 1)
+    return (0.0, 0.19, -0.014), (WOOD_DARK, STEEL)
+
+
+def p_mallet():
+    wood_handle(-0.12, -0.012, 0.0135)
+    lathe("Shaft", [(0.0, -0.014), (0.0108, -0.014), (0.0096, 0.03), (0.0, 0.03)], 12, 0)
+    head = (0.0, 0.03, 0.0)
+    lathe("Head", [(0.0, -0.045), (0.035, -0.045), (0.038, -0.042), (0.039, -0.03), (0.039, 0.03),
+                   (0.038, 0.042), (0.035, 0.045), (0.0, 0.045)], 24, 1, axis="Z", centre=head)
+    for z in (-0.031, 0.031):
+        lathe("Band", [(0.0, z - 0.0032), (0.0393, z - 0.0032), (0.0398, z), (0.0393, z + 0.0032),
+                       (0.0, z + 0.0032)], 24, 2, axis="Z", centre=head)
+    return (0.0, 0.03, -0.045), (WOOD_DARK, BEECH)  # The bottom striking face: swing it like a hammer.
+
+
+def p_chisel():
+    wood_handle(-0.115, -0.014, 0.0145)
+    lathe("Cap", [(0.0, -0.121), (0.0085, -0.121), (0.0105, -0.116), (0.0105, -0.112), (0.0, -0.112)], 14, 2)
+    ferrule(0.008, -0.016, 0.0135)
+    lathe("Neck", [(0.0, 0.004), (0.0058, 0.004), (0.0042, 0.02), (0.0, 0.02)], 10, 1)
+    w, t = 0.006, 0.0017
+    _hull("Blade", [(x, y, z) for x in (-w, w) for y, z in ((0.016, -t), (0.016, t), (0.066, t), (0.082, -t),
+                                                              (0.082, -t + 0.0006))], 1, 0.0004)
+    return (0.0, 0.082, -0.0014), (WOOD, STEEL)
+
+
+def p_rake():
+    wood_handle(-0.11, -0.012, 0.0135)
+    ferrule(0.008, -0.014, 0.0125)
+    sweep("Stem", smooth_path([(0, 0.004, 0), (0, 0.03, 0.003), (0, 0.05, 0.0)], 3), 0.0036, 1,
+          up=(1, 0, 0), sides=8)
+    sweep("Bar", [(-0.021, 0.05, 0.0), (0.021, 0.05, 0.0)], 0.0042, 2, up=(0, 0, 1), sides=10)
+    for i in range(5):  # 8 mm apart, curling down like claws.
+        x = (i - 2) * 0.008
+        tine = smooth_path([(x, 0.05, 0.0), (x, 0.066, -0.002), (x, 0.078, -0.012), (x, 0.081, -0.025)], 3)
+        sweep("Tine", tine, [0.0019 - 0.0011 * k / (len(tine) - 1) for k in range(len(tine))], 1,
+              up=(1, 0, 0), sides=6)
+    return (0.0, 0.081, -0.0258), (WOOD, STEEL)
+
+
+def p_sandpaper():
+    box("Block", (0.064, 0.026, 0.046), (0.0, 0.016, 0.0), 1, 0.004)
+    bm = bmesh.new()
+    bmesh.ops.create_grid(bm, x_segments=16, y_segments=12, size=0.5)
+    for v in bm.verts:
+        v.co = Vector((v.co.x * 0.06, v.co.y * 0.042, 0.0))
+    grit = _obj("Grit", bm)
+    grit.rotation_euler = (math.radians(-90.0), 0.0, 0.0)  # Faces forward (+Y).
+    grit.location = (0.0, 0.0295, 0.0)
+    texture = bpy.data.textures.new("Grit", "CLOUDS")
+    texture.noise_scale = 0.003
+    mod = grit.modifiers.new("Grit", "DISPLACE")
+    mod.texture = texture
+    mod.strength = 0.0008
+    mod.mid_level = 0.0
+    add(grit, 0, Matrix.Translation((0.0, -0.001, 0.0)))  # The grit face gives 1 mm.
+    strap = smooth_path([(-0.029, 0.006, 0), (-0.024, -0.016, 0), (0, -0.03, 0), (0.024, -0.016, 0),
+                         (0.029, 0.006, 0)], 4)
+    sweep("Strap", strap, 0.008, 2, up=(0, 0, 1), profile=[(-1.0, -0.16), (1.0, -0.16), (1.0, 0.16), (-1.0, 0.16)])
+    return (0.0, 0.0305, 0.0), (GRIT, CORK)
+
+
+def p_rolling_pin():
+    pin = (0.0, 0.035, 0.0)
+    lathe("Pin", [(0.0, -0.125), (0.021, -0.125), (0.0238, -0.122), (0.025, -0.112), (0.025, 0.112),
+                  (0.0238, 0.122), (0.021, 0.125), (0.0, 0.125)], 24, 1, axis="X", centre=pin)
+    for side in (-1.0, 1.0):
+        lathe("Handle", [(0.0, 0.124 * side), (0.0078, 0.124 * side), (0.0066, 0.131 * side),
+                         (0.0098, 0.142 * side), (0.0108, 0.151 * side), (0.0082, 0.158 * side),
+                         (0.0, 0.159 * side)], 14, 0, axis="X", centre=pin)
+        lathe("Band", [(0.0, 0.103 * side), (0.0254, 0.103 * side), (0.0254, 0.108 * side),
+                       (0.0, 0.108 * side)], 24, 2, axis="X", centre=pin)
+    return pin, (WOOD_DARK, BEECH)  # Tip on the axis: the collider radius is the pin's.
+
+
+def p_drill():
+    lathe("Housing", [(0.0, -0.072), (0.013, -0.071), (0.02, -0.064), (0.023, -0.046), (0.023, 0.008),
+                      (0.0195, 0.02), (0.0, 0.02)], 18, 0)
+    grip = smooth_path([(0, -0.032, -0.012), (0, -0.04, -0.05), (0, -0.05, -0.084)], 3)
+    sweep("Grip", grip, 0.0135, 0, up=(0, 1, 0),
+          profile=[(math.cos(a), 0.72 * math.sin(a)) for a in (i * math.tau / 12 for i in range(12))])
+    box("Battery", (0.036, 0.062, 0.022), (0.0, -0.048, -0.094), 0, 0.005)
+    box("Trigger", (0.0075, 0.009, 0.017), (0.0, -0.014, -0.028), 2, 0.0025,
+        squeeze=Matrix.Translation((0.0, -0.004, 0.0)))
+    spinning(lathe("Chuck", [(0.0, 0.018), (0.0128, 0.018), (0.0128, 0.034), (0.0108, 0.042),
+                             (0.0062, 0.05), (0.0, 0.05)], 16, 2))
+    spinning(lathe("Bit", [(0.0, 0.048), (0.0015, 0.048), (0.0015, 0.095), (0.0, 0.1)], 8, 1))
+    helix = [(math.cos(t * 4.5 * math.tau) * 0.0016, 0.05 + t * 0.043, math.sin(t * 4.5 * math.tau) * 0.0016)
+             for t in (i / 36 for i in range(37))]
+    spinning(sweep("Flute", helix, 0.0007, 1, up=(0, 1, 0), sides=5))
+    return (0.0, 0.1, 0.0), (IRON, STEEL)
+
+
+def p_clay_gun():
+    lathe("Barrel", [(0.0, -0.062), (0.0145, -0.062), (0.0145, 0.042), (0.0, 0.042)], 18, 1)
+    lathe("Cap", [(0.0, 0.04), (0.0158, 0.04), (0.0158, 0.052), (0.012, 0.057), (0.0, 0.057)], 18, 0)
+    lathe("Nozzle", [(0.0, 0.055), (0.0082, 0.055), (0.006, 0.066), (0.0042, 0.076), (0.0, 0.076)], 12, 1)
+    box("Flange", (0.062, 0.006, 0.018), (0.0, -0.056, 0.0), 0, 0.0028)
+    press = Matrix.Translation((0.0, 0.015, 0.0))  # The plunger, 15 mm forward.
+    lathe("Rod", [(0.0, -0.106), (0.0036, -0.106), (0.0036, -0.058), (0.0, -0.058)], 10, 1, squeeze=press)
+    box("Plunger", (0.05, 0.009, 0.013), (0.0, -0.109, 0.0), 2, 0.0035, squeeze=press)
+    return (0.0, 0.076, 0.0), (RUBBER, STEEL)
+
+
 PROPS = {
     "sculpt_clay": p_clay, "sculpt_smooth": p_smooth, "sculpt_flatten": p_flatten, "sculpt_grab": p_grab,
     "snake_hook": p_snake_hook, "inflate": p_inflate, "crease": p_crease, "layer": p_layer,
@@ -645,7 +802,35 @@ PROPS = {
     "measure": p_measure, "eyedropper": p_eyedropper, "uv_island": p_uv_island, "draw_curve": p_draw_curve,
     "paint_vertex": p_paint_vertex, "sdf_blob": p_sdf_blob, "live_cage": p_live_cage,
     "subdiv_lab": p_subdiv_lab, "grow_seed": p_grow_seed, "retopo_loom": p_retopo_loom,
+    "knife": p_knife, "mallet": p_mallet, "chisel": p_chisel, "rake": p_rake, "sandpaper": p_sandpaper,
+    "rolling_pin": p_rolling_pin, "drill": p_drill, "clay_gun": p_clay_gun,
 }
+
+# Contact collider (radius_m, shaft_m, axis, feel), spec 0.21 sections 1.1, 2.1 and 5. Sculpt brushes
+# use radius ~0.6 x the width that touches at the tip.
+# ponytail: hand-set estimates, not measured from the meshes; tune in the headset.
+# 0.21 tuning: the mallet and sandpaper tips sit ON their flat faces, so a face-sized sphere centred on
+# the tip held the face 2.5-3.5 cm off the surface. A few-mm sphere lets the face rest on it; the dent and
+# sanding size still come from the brush radius, not the collider.
+COLLIDERS = {
+    "sculpt_clay": (0.007, 0.0, "Z", "CLAY"), "sculpt_smooth": (0.012, 0.0, "Z", "SOFT"),
+    "sculpt_flatten": (0.006, 0.0, "Z", "HARD"), "sculpt_grab": (0.018, 0.0, "Z", "CLAY"),
+    "snake_hook": (0.007, 0.0, "Z", "CLAY"), "inflate": (0.003, 0.0, "Z", "CLAY"),
+    "crease": (0.011, 0.0, "Z", "CUT"), "layer": (0.026, 0.0, "Z", "CLAY"),
+    "mask_paint": (0.024, 0.0, "Z", "SOFT"), "mask_extract": (0.02, 0.0, "Z", "HARD"),
+    "spray_material": (0.004, 0.0, "Z", "SOFT"), "scrub_time": (0.006, 0.0, "Z", "HARD"),
+    "place_object": (0.02, 0.0, "Z", "HARD"), "place_prefab": (0.02, 0.0, "Z", "HARD"),
+    "measure": (0.004, 0.0, "Z", "HARD"), "eyedropper": (0.002, 0.0, "Z", "HARD"),
+    "uv_island": (0.002, 0.05, "Z", "CUT"), "draw_curve": (0.002, 0.0, "Z", "SOFT"),
+    "paint_vertex": (0.002, 0.0, "Z", "SOFT"), "sdf_blob": (0.01, 0.0, "Z", "CLAY"),
+    "live_cage": (0.03, 0.0, "Z", "HARD"), "subdiv_lab": (0.01, 0.0, "Z", "HARD"),
+    "grow_seed": (0.003, 0.0, "Z", "HARD"), "retopo_loom": (0.006, 0.0, "Z", "HARD"),
+    "knife": (0.002, 0.16, "Z", "CUT"), "mallet": (0.004, 0.0, "Z", "HARD"),
+    "chisel": (0.006, 0.03, "Z", "CUT"), "rake": (0.004, 0.0, "Z", "CUT"),
+    "sandpaper": (0.003, 0.0, "Z", "SOFT"), "rolling_pin": (0.025, 0.25, "X", "CLAY"),
+    "drill": (0.002, 0.04, "Z", "CUT"), "clay_gun": (0.004, 0.0, "Z", "CLAY"),
+}
+assert set(COLLIDERS) == set(PROPS), set(PROPS) ^ set(COLLIDERS)
 
 
 # ---- Export ---------------------------------------------------------------------
@@ -674,7 +859,7 @@ def _smooth_normals(co, tris):
 
 def export_prop():
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    pos, nrm, part, sqz, idx = [], [], [], [], []
+    pos, nrm, part, sqz, idx, spin = [], [], [], [], [], []
     base = 0
     for obj, part_index, squeeze in _parts:
         evaluated = obj.evaluated_get(depsgraph)
@@ -707,17 +892,19 @@ def export_prop():
                     nrm.append(n)
                     sqz.append(delta[v])
                     part.append(part_index)
+                    spin.append(obj.name in _spinning)
                 out.append(base + keys[key])
             idx.append(out)
         base += len(keys)
     pos = np.array(pos) @ TO_LOCAL.T
     nrm = np.array(nrm) @ TO_LOCAL.T
     sqz = np.array(sqz) @ TO_LOCAL.T
-    return pos, nrm, np.array(part, dtype=np.uint8), sqz, np.array(idx, dtype=np.uint16)
+    return pos, nrm, np.array(part, dtype=np.uint8), sqz, np.array(idx, dtype=np.uint16), np.array(spin, bool)
 
 
 def clear_scene():
     _parts.clear()
+    _spinning.clear()
     for obj in tuple(bpy.data.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
     for mesh in tuple(bpy.data.meshes):
@@ -731,7 +918,7 @@ def build():
         clear_scene()
         tip, (handle_colour, body_colour) = make()
         bpy.context.view_layer.update()
-        pos, nrm, part, sqz, idx = export_prop()
+        pos, nrm, part, sqz, idx, spin = export_prop()
         tris = len(idx)
         total += tris
         print(f"  {prop_id:15s} {tris:5d} tris  {len(pos):5d} verts")
@@ -743,6 +930,12 @@ def build():
         arrays[f"{prop_id}__idx"] = idx
         arrays[f"{prop_id}__tip"] = (np.array(tip) @ TO_LOCAL.T).astype(np.float32)
         arrays[f"{prop_id}__colours"] = np.array((handle_colour, body_colour), dtype=np.float32)
+        radius, shaft, axis, feel = COLLIDERS[prop_id]
+        arrays[f"{prop_id}__collider"] = np.array((radius, shaft), dtype=np.float32)
+        arrays[f"{prop_id}__axis"] = np.array(axis)
+        arrays[f"{prop_id}__feel"] = np.array(feel)
+        if spin.any():
+            arrays[f"{prop_id}__spin"] = spin.astype(np.uint8)
     assert total <= MAX_TOTAL_TRIS, total
     arrays["ids"] = np.array(list(PROPS))
     OUT.parent.mkdir(parents=True, exist_ok=True)
@@ -801,7 +994,7 @@ def contact_sheet(path):
     text_mat.node_tree.nodes["Principled BSDF"].inputs["Emission Color"].default_value = (0.9, 0.92, 0.96, 1)
     text_mat.node_tree.nodes["Principled BSDF"].inputs["Emission Strength"].default_value = 1.0
     text_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0, 0, 0, 1)
-    cell, cols = 256, 6
+    cell, cols = 256, 8
     rows = math.ceil(len(ids) / cols)
     sheet = np.zeros((rows * cell, cols * cell, 4), dtype=np.float32)
     plate = (0.085, 0.095, 0.12)

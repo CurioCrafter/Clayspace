@@ -34,6 +34,32 @@ for theme in polish.THEMES:
 assert tool_props.prop_for("select") is None and tool_props.prop_for("sculpt_snake") == "snake_hook"
 spin = tool_props._motion("subdiv_lab", 100.0, "smoke") @ tool_props._motion("subdiv_lab", 100.5, "smoke").inverted()
 assert abs(spin.to_euler().z) > 0.1, "The helix wand spins"
+
+# 0.21: 32 props with colliders, and the draw matrices for squash / spin / offset (no GPU needed).
+from mathutils import Vector  # noqa: E402
+assert len(props) == 32, len(props)
+for prop in props:
+    radius, shaft, axis, feel = tool_props.collider(prop)
+    assert radius > 0.0 and axis in {"X", "Z"} and feel in tool_props.FEELS, prop
+aim = Matrix.Translation((1.0, 2.0, 0.5)) @ Matrix.Rotation(0.7, 4, "Y") @ Matrix.Scale(2.0, 4)
+offset = Vector((0.0, 0.0, 0.01))
+for prop in ("knife", "mallet", "rolling_pin", "drill"):
+    tip = Vector(tool_props.tip_offset(prop))
+    spin = 30.0 if prop == "drill" else 0.0  # A whole-prop spin turns about the long axis, not the tip.
+    for subset, model in tool_props.models(prop, aim, 50.0, "smoke2", squash=((0, 0, 1), 0.3), spin=spin,
+                                           offset=offset):
+        landed = model @ tip
+        assert (landed - (aim.translation + offset)).length < 1e-5, (prop, subset, landed)
+subsets = [s for s, _m in tool_props.models("drill", aim, 50.0, "smoke2", spin=30.0)]
+assert subsets == ["fixed", "spin"], subsets
+fixed, turned = (m for _s, m in tool_props.models("drill", aim, 50.0, "smoke2", spin=30.0))
+drill = tool_props._load()["drill"]
+fixed_pos = drill["pos"][drill["fixed_idx"].ravel()]
+grip = Vector(fixed_pos[np.argmax(np.linalg.norm(fixed_pos[:, :2], axis=1))])  # Far from the spin axis.
+assert (fixed @ grip - turned @ grip).length > 1e-4, "Only the bit and chuck turn"
+assert [s for s, _m in tool_props.models("drill", aim, 50.0, "smoke2")] == ["all"], "No spin unless boring"
+squashed = tool_props.models("mallet", Matrix.Identity(4), 50.0, "smoke3", squash=((0, 0, 1), 0.3))[0][1]
+assert abs(squashed.to_3x3().determinant() - np.linalg.det(tool_props.squash_matrix((0, 0, 1), 0.3))) < 1e-5
 mode = "cpu"
 
 if not bpy.app.background:

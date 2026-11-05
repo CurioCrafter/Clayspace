@@ -25,7 +25,7 @@ bpy.context.preferences.edit.undo_steps = 32
 xr_workbench.register()
 try:
     settings = bpy.context.window_manager.xrwb_settings
-    assert xr_workbench.bl_info["version"] == (0, 20, 0)
+    assert xr_workbench.bl_info["version"] >= (0, 20, 0)
     labels = {tool for tool, _l, _d in ui.ALL_TOOLS}
     for tool in physical_tools.TOOLS:
         assert tool in labels and tool in ray_feedback.TOOL_COLOURS, tool
