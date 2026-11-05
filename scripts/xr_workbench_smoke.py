@@ -23,7 +23,7 @@ from xr_workbench.ui import XRWB_OT_place_overlay, set_runtime_passthrough  # no
 from mathutils import Vector  # noqa: E402
 
 
-assert tuple(bpy.app.version) == (5, 1, 2), bpy.app.version_string
+assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0), bpy.app.version_string
 if expected_install:
     assert (
         Path(xr_workbench.__file__).resolve()

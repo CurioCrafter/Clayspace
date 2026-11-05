@@ -21,7 +21,7 @@ DEFAULTS = {"guide_done": False, "desktop_at_start": False, "haptic_strength": 0
             "precision": 0.25, "hover_ticks": True, "label_scale": 1.0,
             "toasts": True, "readouts": True, "hover_outline": True, "detents": True,
             "two_hand": "SCALE_ROTATE", "menu_hand": "OFF",
-            "locomotion": "SMOOTH", "fly": False, "grip_empty": "WORLD"}
+            "locomotion": "SMOOTH", "fly": False, "grip_empty": "WORLD", "theme": "DEFAULT"}
 _cache: dict | None = None
 
 
@@ -226,6 +226,14 @@ def guide_steps(profile: str) -> list[tuple[str, list[str], str]]:
           "Travel page: Go to Selection, Reset View. Settings > Start &",
           "Travel: Smooth or Teleport (stick forward, aim, let go), Fly."],
          "Grip empty space with both hands and pull them apart."),
+        ("Real Blender, in your hands",
+         ["Undo Ring (Quick menu): your real undo history around your",
+          "wrist. Right stick down steps back, up forward; a button closes.",
+          "Modifier Tower (Modifiers menu): the stack as blocks. Grip one",
+          "up or down to reorder, trigger it to switch it on or off, point",
+          "and push the stick to dial its value. Node Garden > Geometry",
+          "Nodes of Selected: relink procedural modifiers, live."],
+         "Add Bevel and Subdivision, then swap them in the tower."),
     ]
 
 

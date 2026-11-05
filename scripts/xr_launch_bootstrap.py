@@ -162,8 +162,8 @@ def _auto_start_timer():
     return tick
 
 
-if bpy.app.version[:3] != (5, 1, 2):
-    raise RuntimeError(f"Expected Blender 5.1.2, found {bpy.app.version_string}")
+if not (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0):
+    raise RuntimeError(f"Expected Blender 4.5 to 5.2, found {bpy.app.version_string}")
 # This launcher starts a dedicated, unsaved diagnostic workspace.
 bpy.ops.wm.read_homefile(use_empty=True)
 personal_report = None

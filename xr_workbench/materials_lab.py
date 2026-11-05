@@ -105,6 +105,7 @@ def build_preset(key: str) -> bpy.types.Material:
             return material
     label, inputs, recipe = PRESETS[key]
     material = bpy.data.materials.new("XR " + label)
+    material.use_nodes = True  # Blender 4.5 starts without nodes; 5.0+ ignores this
     material[PRESET_KEY] = key
     tree = material.node_tree
     tree.nodes.clear()

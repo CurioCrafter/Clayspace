@@ -43,7 +43,7 @@ class Layout:
 
 
 assert bpy.app.background and not bpy.data.filepath
-assert bpy.app.version[:3] == (5, 1, 2)
+assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0)
 addon.register()
 settings = bpy.context.window_manager.xrwb_settings
 assert len(ui.COMMAND_PAGES) == 10

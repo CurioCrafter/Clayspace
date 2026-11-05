@@ -52,6 +52,7 @@ def material(key):
     if found is not None:
         return found
     found = bpy.data.materials.new(name)
+    found.use_nodes = True  # Blender 4.5 starts without nodes; 5.0+ ignores this
     bsdf = found.node_tree.nodes["Principled BSDF"]
     if key in GLOW:
         colour, strength = GLOW[key]

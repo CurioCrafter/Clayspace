@@ -390,6 +390,7 @@ class XRWB_MT_quick(bpy.types.Menu):
             layout.operator("xrwb.boolean_selected", text="Subtract Selected", icon="MOD_BOOLEAN").operation = "DIFFERENCE"
             layout.operator("xrwb.bevel_object", text="Bevel Object", icon="MOD_BEVEL")
             layout.operator("xrwb.open_hand_menu", text="Modifiers  ›", icon="MODIFIER").menu = "XRWB_MT_modifiers"
+            layout.operator("xrwb.open_hand_menu", text="Modifier Tower  ›", icon="MOD_ARRAY").menu = "XRWB_MT_modifier_tower"
             layout.operator("xrwb.open_hand_menu", text="Edit Vertices / Edges / Faces  ›",
                             icon="EDITMODE_HLT").menu = "XRWB_MT_edit_mesh"
         layout.separator()
@@ -398,6 +399,7 @@ class XRWB_MT_quick(bpy.types.Menu):
         layout.operator("xrwb.toggle_desktop", text="Show / Hide Desktop", icon="WINDOW")
         layout.operator("xrwb.quick_delete", text="Delete", icon="TRASH")
         layout.operator("xrwb.history_redo", text="Redo", icon="LOOP_FORWARDS")
+        layout.operator("xrwb.undo_ring", text="Undo Ring", icon="RECOVER_LAST")
         layout.separator()
         for key, text, _description in viewer_scale.WORKFLOWS:
             if key != workflow:

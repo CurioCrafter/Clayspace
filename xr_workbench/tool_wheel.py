@@ -229,7 +229,7 @@ def draw() -> None:
             if index == highlight:
                 colour = (*polish.ACCENT, 0.95 * fade)
             elif kind == "tool" and value == current:
-                colour = (0.16, 0.26, 0.4, 0.88 * fade)
+                colour = (*polish.WHEEL_CURRENT, 0.88 * fade)
             else:
                 colour = (*polish.PLATE, polish.PLATE_ALPHA * fade)
             shader.uniform_float("color", colour)

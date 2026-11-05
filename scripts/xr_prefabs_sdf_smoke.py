@@ -264,7 +264,7 @@ def check_controls():
 
 
 def main():
-    assert bpy.app.version[:3] == (5, 1, 2)
+    assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0)
     assert os.environ.get("BLENDER_USER_DATAFILES"), "Set BLENDER_USER_DATAFILES to an empty temporary folder"
     bpy.context.preferences.edit.use_global_undo = True
     bpy.context.preferences.edit.undo_steps = 64

@@ -12,7 +12,8 @@ import math
 import bpy
 from mathutils import Matrix, Quaternion, Vector
 
-from . import controllers, editing, interaction_log, menu_pointer, node_garden, polish, runtime, tool_wheel
+from . import (controllers, editing, interaction_log, menu_pointer, modifier_tower, node_garden, polish, runtime,
+               tool_wheel, undo_ring)
 
 TOOL_COLOURS = {
     "select": (0.95, 0.95, 1.0), "move": (0.95, 0.95, 1.0), "rotate": (0.95, 0.95, 1.0),
@@ -439,10 +440,10 @@ def _garden_links(context):
 def _socket_labels(context, poses, viewer_rotation, units):
     """Name the socket each ray is on, so you know what you are about to link."""
     labels = []
-    material = node_garden.material_of(node_garden.root(context))
+    tree = node_garden.tree_of(node_garden.root(context))
     for origin, _rotation, direction in poses.values():
         sphere = node_garden.nearest_socket(context, origin, direction)
-        socket = node_garden.socket_ref(material.node_tree, sphere) if sphere is not None else None
+        socket = node_garden.socket_ref(tree, sphere) if sphere is not None else None
         if socket is None:
             continue
         side = 1 if socket.is_output else -1
@@ -452,14 +453,40 @@ def _socket_labels(context, poses, viewer_rotation, units):
     return labels
 
 
+def _undo_ring(poses, viewer_rotation, units):
+    """(shapes, plates) of the open Undo Ring: a dot per step around the ring hand, names above."""
+    pose = poses.get(undo_ring.hand())
+    found = undo_ring.steps()
+    if pose is None or not found:
+        return [], []
+    rotation = Quaternion(viewer_rotation)
+    right, up, normal = (rotation @ Vector(axis) for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)))
+    centre, radius = Vector(pose[0]), undo_ring.RADIUS_M * units
+    shapes = [(ring(centre, normal, radius, 48), polish.MUTED, 0.35)]
+    for angle, _name, kind in undo_ring.layout(found):
+        point = centre + (right * math.sin(angle) + up * math.cos(angle)) * radius
+        colour = {"current": polish.ACCENT, "past": polish.TEXT}.get(kind, polish.MUTED)
+        shapes.append((ring(point, normal, radius * (0.16 if kind == "current" else 0.07), 12), colour, 1.0))
+        if kind == "current":
+            shapes.append((ring(point, normal, radius * 0.06, 8), polish.TEXT, 1.0))
+    position = undo_ring.active_position(found)
+    older = found[position - 1][1] if position > 0 else "(oldest)"
+    newer = found[position + 1][1] if position + 1 < len(found) else "(newest)"
+    lines = [f"{found[position][1]}   {position + 1}/{len(found)}", f"Stick down: {older}", f"Stick up: {newer}"]
+    return shapes, [Plate(plate_matrix(centre, viewer_rotation, units, undo_ring.RADIUS_M + 0.03),
+                          lines, polish.ACCENT, 1.0, True)]
+
+
 def refresh(context) -> None:
     """Recompute the cache; plain values only."""
     settings = context.window_manager.xrwb_settings
     rings = bool(settings.ray_markers)
     _fills.clear()
     _links[:] = _garden_links(context)
+    if controllers._active_gesture is None and editing.active_transaction() is None:
+        modifier_tower.sync(context)  # A gripped block dropped at a new height reorders the stack.
     if (not rings and not getattr(settings, "button_hints", False) and not tool_wheel.is_open()
-            and not controllers.hand_menu_active(context)):
+            and not undo_ring.is_open() and not controllers.hand_menu_active(context)):
         _cache.clear()
         _shapes.clear()
         _hints.clear()
@@ -517,6 +544,10 @@ def refresh(context) -> None:
     _shapes[:] = (_preview_shapes(context, settings, tool, units, poses) + hover_lines) if rings else hover_lines
     _shapes.extend(_menu_cursor(context, poses))
     _hints.clear()
+    if undo_ring.is_open() and hasattr(state, "viewer_pose_rotation"):
+        ring_shapes, ring_plates = _undo_ring(poses, tuple(state.viewer_pose_rotation), units)
+        _shapes.extend(ring_shapes)
+        _hints.extend(ring_plates)
     if hasattr(state, "viewer_pose_rotation"):
         _hints.extend(_status_plates(context, settings, tool, poses, tuple(state.viewer_pose_rotation), units))
     if node_garden.is_out(context) and hasattr(state, "viewer_pose_rotation"):
@@ -539,6 +570,7 @@ def _draw():
         return
     previous = None
     try:
+        polish.sync_theme()
         import gpu
         from gpu_extras.batch import batch_for_shader
         positions, colours = [], []
@@ -558,7 +590,7 @@ def _draw():
         previous = gpu.state.blend_get(), gpu.state.depth_test_get(), gpu.state.depth_mask_get()
         shader = gpu.shader.from_builtin("POLYLINE_FLAT_COLOR")
         shader.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
-        shader.uniform_float("lineWidth", 2.5)
+        shader.uniform_float("lineWidth", polish.LINE_WIDTH)
         gpu.state.blend_set("ALPHA")
         gpu.state.depth_test_set("NONE")
         gpu.state.depth_mask_set(False)

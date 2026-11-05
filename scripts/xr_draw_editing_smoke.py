@@ -72,7 +72,7 @@ def target():
 
 
 def main():
-    assert bpy.app.version[:3] == (5, 1, 2)
+    assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0)
     assert bpy.app.background and not bpy.data.filepath, "Only an owned factory headless scene is allowed"
     bpy.context.preferences.edit.use_global_undo = True
     bpy.context.preferences.edit.undo_steps = 32

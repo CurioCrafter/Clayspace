@@ -91,21 +91,21 @@ def check_prefs_and_guide():
     settings.desktop_at_start = False
     for profile in ("INDEX", "QUEST", "AUTO"):
         steps = onboarding.guide_steps(profile)
-        assert len(steps) == 9 and all(len(line) <= 70 for _t, lines, _a in steps for line in lines)
+        assert len(steps) == 10 and all(len(line) <= 70 for _t, lines, _a in steps for line in lines)
         text = "\n".join(onboarding.controls_lines(profile))
         assert ("Quest" in text) == (profile != "INDEX")
     settings.controller_profile = "INDEX"
     assert bpy.ops.xrwb.guide(action="OPEN") == {"FINISHED"} and settings.command_page == "GUIDE"
-    for _ in range(10):
+    for _ in range(11):
         bpy.ops.xrwb.guide(action="NEXT")
-    assert settings.guide_step == 8
+    assert settings.guide_step == 9
     bpy.ops.xrwb.guide(action="BACK")
-    assert settings.guide_step == 7
+    assert settings.guide_step == 8
     assert not onboarding.prefs()["guide_done"]
     assert bpy.ops.xrwb.guide(action="FINISH") == {"FINISHED"} and settings.command_page == "CREATE"
     onboarding.reset_cache()
     assert onboarding.prefs()["guide_done"]
-    print("XR_FEEL_PREFS persisted=1 guide_steps=9 guide_navigation=1 guide_done=1", flush=True)
+    print("XR_FEEL_PREFS persisted=1 guide_steps=10 guide_navigation=1 guide_done=1", flush=True)
 
 
 def check_ray_and_stick():
@@ -385,7 +385,7 @@ def check_labels_and_menus():
 
 
 def main():
-    assert bpy.app.version[:3] == (5, 1, 2) and bpy.app.background and not bpy.data.filepath
+    assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0) and bpy.app.background and not bpy.data.filepath
     assert os.environ.get("BLENDER_USER_CONFIG"), "Set BLENDER_USER_CONFIG to an empty temporary folder"
     bpy.context.preferences.edit.use_global_undo = True
     bpy.context.preferences.edit.undo_steps = 64

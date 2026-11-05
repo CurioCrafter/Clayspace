@@ -231,7 +231,7 @@ def check_go_to_and_reset():
 
 
 def main():
-    assert bpy.app.version[:3] == (5, 1, 2)
+    assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0)
     xr_workbench.register()
     try:
         results = {name: check() for name, check in (

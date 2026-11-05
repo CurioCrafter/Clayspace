@@ -588,7 +588,7 @@ def _m0_report(
     version = tuple(blender.get("version_tuple") or ())
     target_state = (
         "pass"
-        if version == TARGET_BLENDER_VERSION
+        if (4, 5, 0) <= version[:3] < (5, 3, 0)
         else ("fail" if version else "unknown")
     )
     graphics_complete = all(

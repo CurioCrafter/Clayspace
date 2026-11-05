@@ -21,11 +21,12 @@ Every area has one of three routes:
 | Mesh modeling | Extrude, Free Extrude, chained extrusion, Inset, Scale Face, Select / Bevel Edges | Edit page, Blender Menus > Mesh | Edit Mode with every tool | face, edge, modeling |
 | **Vertex / edge / face editing** | **Ray pick and sweep select, grip moves the selection, Extrude Selection** | **Edit V·E·F menu:** modes and 16 mesh actions | Edit Mode | **interaction fixes** |
 | Booleans and bevels | Cut Away / Join / Keep Overlap cutters | Combine selected, Bevel Object | Modifier panel | draw, native tools |
-| **Modifiers** | — | **Studio > Modifiers:** add 16 kinds, see and change their key values, show/hide, reorder, apply, remove | Properties > Modifiers | **studio** |
-| Geometry Nodes | — | Add a Geometry Nodes modifier (a working in→out group) | Geometry Node editor opens from the modifier | studio |
+| **Modifiers** | **Modifier Tower:** grip blocks to reorder, trigger to show/hide, stick to dial | **Studio > Modifiers:** add 16 kinds, see and change their key values, show/hide, reorder, apply, remove | Properties > Modifiers | **studio** |
+| Geometry Nodes | **Node Garden:** move nodes, drag links, the object updates live | Add a Geometry Nodes modifier (a working in→out group), Add Node, node values | Geometry Node editor opens from the modifier | studio, real blender |
 | Sculpting | Clay, Grab, Smooth, Flatten, Dig, Mirror X, trigger pressure, Clay Ball, your size | Sculpt page, wheel | Native Sculpt Mode brushes | physical |
 | Materials | Material Shelf blocks, Spray Material, Eyedropper | Materials page, presets, save your own | Shader editor (Show Logic) | physical, feel |
 | Shader node trees | **Node Garden:** move nodes, drag links, remove links | Add Node, node values | Shader editor stays in step | node garden |
+| **Undo history** | **Undo Ring:** scrub the real history with the stick | Undo, Redo, Undo Ring buttons | Edit > Undo History | **real blender** |
 | UVs | UV Island: unwrap by parts | Smart UV, Pack, Clear Seams, Checker | UV Editor | modeling |
 | **Vertex colour painting** | **Paint Colour** spray with falloff and pressure | Studio > Paint & 3D Pen | Vertex Paint mode | **studio** |
 | **Curves / drawing in the air** | **3D Pen:** real bevelled Bezier curves, pressure = thickness | Studio > Paint & 3D Pen | Curve Edit Mode | **studio** |

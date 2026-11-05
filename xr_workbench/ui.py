@@ -80,7 +80,8 @@ def _update_opacity(settings, _context) -> None:
 
 
 def _update_travel_speed(settings, context):
-    context.window_manager.xr_session_settings.fly_speed = settings.travel_speed
+    if hasattr(context.window_manager.xr_session_settings, "fly_speed"):  # Blender 5.0+
+        context.window_manager.xr_session_settings.fly_speed = settings.travel_speed
 
 
 def set_runtime_passthrough(xr_settings, enabled: bool) -> bool:
@@ -412,6 +413,9 @@ class XRWB_PG_settings(bpy.types.PropertyGroup):
                      ("SCALE", "Scale Only", "Both hands only resize and carry; no turning"),
                      ("AXIS", "Stretch Axis", "Hands lined up with an object axis stretch just that axis")),
         name="Two Hands", description="What holding one object with both hands does")
+    theme: onboarding.enum_pref_property(
+        "theme", [(key, label, description) for key, (label, description, _values) in polish.THEMES.items()],
+        name="Theme", description="Colours of the labels, plates, wheel and rings in VR. Applies at once")
     toasts: onboarding.pref_property(
         bpy.props.BoolProperty, "toasts", name="Toasts",
         description="The outcome of each action floats briefly by the hand that did it")
@@ -638,10 +642,11 @@ def configure_steamvr_session(context):
     xr.show_controllers = True
     xr.controller_draw_style = "LIGHT_RAY"
     if first_setup:
-        navigation = context.preferences.inputs.xr_navigation
-        navigation.snap_turn = True
-        navigation.turn_amount = pi / 6
-        xr.fly_speed = settings.travel_speed
+        navigation = getattr(context.preferences.inputs, "xr_navigation", None)  # Blender 5.0+
+        if navigation is not None:
+            navigation.snap_turn = True
+            navigation.turn_amount = pi / 6
+            xr.fly_speed = settings.travel_speed
     set_runtime_passthrough(xr, False)
 
 
@@ -1458,6 +1463,7 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row.prop(settings, "readouts", text="Readouts", toggle=True)
                 row.prop(settings, "hover_outline", text="Outline", toggle=True)
                 row.prop(settings, "detents", text="Detents", toggle=True)
+                layout.prop(settings, "theme", text="Theme")
                 row = layout.row(align=True)
                 row.prop(settings, "haptic_strength", text="Haptics", slider=True)
                 row.prop(settings, "ray_markers", text="Ray Rings", toggle=True)
@@ -1517,11 +1523,12 @@ class XRWB_PT_command_deck(bpy.types.Panel):
                 row.label(text="Empty-space grip:")
                 row.prop(settings, "grip_empty", text="")
                 layout.prop(settings, "travel_speed", text="Maximum Travel Speed")
-                navigation = context.preferences.inputs.xr_navigation
-                row = layout.row(align=True)
-                row.prop(navigation, "snap_turn", text="Snap Turn", toggle=True)
-                row.prop(navigation, "turn_amount", text="Turn Angle")
-                layout.prop(navigation, "vignette_intensity", text="Motion Vignette")
+                navigation = getattr(context.preferences.inputs, "xr_navigation", None)  # Blender 5.0+
+                if navigation is not None:
+                    row = layout.row(align=True)
+                    row.prop(navigation, "snap_turn", text="Snap Turn", toggle=True)
+                    row.prop(navigation, "turn_amount", text="Turn Angle")
+                    layout.prop(navigation, "vignette_intensity", text="Motion Vignette")
         elif page == "GUIDE":
             steps = onboarding.guide_steps(settings.controller_profile)
             step = min(settings.guide_step, len(steps) - 1)
@@ -1544,10 +1551,11 @@ class XRWB_PT_command_deck(bpy.types.Panel):
             for label, speed in (("Precision", 0.35), ("Walk", 1.4), ("Travel", 3.0)):
                 row.operator("xrwb.travel_preset", text=label).speed = speed
             layout.prop(settings, "travel_speed")
-            navigation = context.preferences.inputs.xr_navigation
-            layout.prop(navigation, "snap_turn", text="Snap Turn")
-            layout.prop(navigation, "turn_amount", text="Turn Angle")
-            layout.prop(navigation, "vignette_intensity", text="Motion Vignette")
+            navigation = getattr(context.preferences.inputs, "xr_navigation", None)  # Blender 5.0+
+            if navigation is not None:
+                layout.prop(navigation, "snap_turn", text="Snap Turn")
+                layout.prop(navigation, "turn_amount", text="Turn Angle")
+                layout.prop(navigation, "vignette_intensity", text="Motion Vignette")
             _size_controls(layout, context)
             row = layout.row(align=True)
             row.operator("xrwb.travel", text="Go to Selection", icon="VIEW_ZOOM").action = "GO_TO"
@@ -1748,9 +1756,10 @@ class XRWB_PT_workspace(bpy.types.Panel):
             box.label(text="Left stick click: show / close desktop; left B: cancel")
             box.prop(settings, "travel_speed")
             box.label(text="Index left pad: teleport; sticks: move / turn")
-            navigation = context.preferences.inputs.xr_navigation
-            box.prop(navigation, "vignette_intensity", text="Motion Vignette")
-            box.prop(navigation, "turn_amount", text="Snap Turn Angle")
+            navigation = getattr(context.preferences.inputs, "xr_navigation", None)  # Blender 5.0+
+            if navigation is not None:
+                box.prop(navigation, "vignette_intensity", text="Motion Vignette")
+                box.prop(navigation, "turn_amount", text="Snap Turn Angle")
             box.label(text="SteamVR boundary is managed by Room Setup")
         else:
             box.label(text="Camera pinch currently targets Add Cube only", icon="INFO")

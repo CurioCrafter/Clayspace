@@ -29,7 +29,7 @@ import xr_workbench  # noqa: E402
 xr_workbench.register()
 
 
-assert tuple(bpy.app.version) == (5, 1, 2), bpy.app.version_string
+assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0), bpy.app.version_string
 if expected_install:
     expected_module = Path(expected_install).resolve() / "controllers.py"
     assert Path(controllers.__file__).resolve() == expected_module

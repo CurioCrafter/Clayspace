@@ -326,7 +326,7 @@ def check_viewer_scale():
 
 
 def main():
-    assert bpy.app.version[:3] == (5, 1, 2) and bpy.app.background
+    assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0) and bpy.app.background
     assert not bpy.data.filepath, "Only a factory unsaved test scene is allowed"
     assert os.environ.get("BLENDER_USER_DATAFILES"), "Set BLENDER_USER_DATAFILES to an empty temporary folder"
     assert not materials_lab.user_presets(), "Preset folder must start empty"

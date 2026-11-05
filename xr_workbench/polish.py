@@ -21,15 +21,60 @@ from time import monotonic
 
 # ---- Palette -------------------------------------------------------------
 
-ACCENT = (0.30, 0.62, 1.00)
-SUCCESS = (0.36, 0.90, 0.56)
-WARNING = (1.00, 0.72, 0.25)
-DANGER = (1.00, 0.36, 0.30)
-TEXT = (0.96, 0.97, 1.00)
-MUTED = (0.66, 0.70, 0.78)
-PLATE = (0.035, 0.04, 0.055)
-PLATE_ALPHA = 0.84
-LEVEL_COLOURS = {"INFO": SUCCESS, "WARNING": WARNING, "ERROR": DANGER}
+# Each theme sets every key; apply_theme copies one into the module names
+# below, which the draw code reads every frame. Tool ring colours stay fixed
+# (they say what a tool does). LINE_WIDTH is the ring/outline width in pixels.
+THEMES = {
+    "DEFAULT": ("Default", "The standard dark plates with blue highlights", {
+        "ACCENT": (0.30, 0.62, 1.00), "SUCCESS": (0.36, 0.90, 0.56), "WARNING": (1.00, 0.72, 0.25),
+        "DANGER": (1.00, 0.36, 0.30), "TEXT": (0.96, 0.97, 1.00), "MUTED": (0.66, 0.70, 0.78),
+        "PLATE": (0.035, 0.04, 0.055), "PLATE_ALPHA": 0.84, "WHEEL_CURRENT": (0.16, 0.26, 0.40),
+        "LINE_WIDTH": 2.5}),
+    "MIDNIGHT": ("Midnight", "Deep indigo plates with soft violet highlights", {
+        "ACCENT": (0.66, 0.56, 1.00), "SUCCESS": (0.45, 0.88, 0.72), "WARNING": (1.00, 0.76, 0.40),
+        "DANGER": (1.00, 0.45, 0.55), "TEXT": (0.94, 0.93, 1.00), "MUTED": (0.70, 0.68, 0.86),
+        "PLATE": (0.05, 0.04, 0.12), "PLATE_ALPHA": 0.88, "WHEEL_CURRENT": (0.22, 0.17, 0.40),
+        "LINE_WIDTH": 2.5}),
+    "HIGH_CONTRAST": ("High Contrast", "Black plates, white text, yellow highlights, thicker lines", {
+        "ACCENT": (1.00, 0.86, 0.00), "SUCCESS": (0.30, 1.00, 0.40), "WARNING": (1.00, 0.60, 0.00),
+        "DANGER": (1.00, 0.30, 0.30), "TEXT": (1.00, 1.00, 1.00), "MUTED": (0.86, 0.86, 0.86),
+        "PLATE": (0.0, 0.0, 0.0), "PLATE_ALPHA": 0.97, "WHEEL_CURRENT": (0.28, 0.28, 0.28),
+        "LINE_WIDTH": 4.0}),
+    "OCEAN": ("Ocean", "Deep teal plates with aqua highlights", {
+        "ACCENT": (0.22, 0.86, 0.86), "SUCCESS": (0.40, 0.92, 0.62), "WARNING": (1.00, 0.78, 0.38),
+        "DANGER": (1.00, 0.42, 0.38), "TEXT": (0.90, 0.98, 1.00), "MUTED": (0.62, 0.80, 0.84),
+        "PLATE": (0.01, 0.09, 0.12), "PLATE_ALPHA": 0.86, "WHEEL_CURRENT": (0.04, 0.28, 0.34),
+        "LINE_WIDTH": 2.5}),
+    "LIGHT": ("Light", "Pale plates with dark text, for bright scenes", {
+        "ACCENT": (0.05, 0.36, 0.78), "SUCCESS": (0.10, 0.55, 0.25), "WARNING": (0.78, 0.46, 0.00),
+        "DANGER": (0.80, 0.16, 0.12), "TEXT": (0.07, 0.09, 0.13), "MUTED": (0.32, 0.36, 0.43),
+        "PLATE": (0.95, 0.96, 0.98), "PLATE_ALPHA": 0.93, "WHEEL_CURRENT": (0.78, 0.86, 0.97),
+        "LINE_WIDTH": 2.5}),
+}
+ACCENT = SUCCESS = WARNING = DANGER = TEXT = MUTED = PLATE = WHEEL_CURRENT = (1.0, 1.0, 1.0)
+PLATE_ALPHA = LINE_WIDTH = 1.0
+LEVEL_COLOURS: dict = {}
+_theme = ""
+
+
+def apply_theme(key: str) -> str:
+    """Make ``key`` (or Default if unknown) the live palette; returns the key used."""
+    global LEVEL_COLOURS, _theme
+    key = key if key in THEMES else "DEFAULT"
+    if key != _theme:
+        globals().update(THEMES[key][2])
+        LEVEL_COLOURS = {"INFO": SUCCESS, "WARNING": WARNING, "ERROR": DANGER}
+        _theme = key
+    return key
+
+
+def sync_theme() -> None:
+    """Follow the Theme preference; cheap enough to call once per frame."""
+    from . import onboarding
+    apply_theme(onboarding.prefs()["theme"])
+
+
+apply_theme("DEFAULT")
 
 
 def ease_out(t: float) -> float:
@@ -180,7 +225,7 @@ def toast_alpha(age: float) -> float:
     if age < 0.0 or age > TOAST_SECONDS:
         return 0.0
     if age < 0.12:
-        return ease_out(age / 0.12)
+        return max(0.05, ease_out(age / 0.12))  # A same-tick toast is not a faded one.
     return min(1.0, (TOAST_SECONDS - age) / TOAST_FADE)
 
 

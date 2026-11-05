@@ -1,4 +1,4 @@
-# Controller map 0.18.0 — what every button does, by situation
+# Controller map 0.19.0 — what every button does, by situation
 
 **Design rule:** pick with the stick, see a preview, commit on release. Menus are
 short lists you can walk with the right stick, and a click presses the
@@ -33,7 +33,7 @@ distinct buzz when it is refused. Quest names are in brackets.
 
 The table above is the default. Right A, right B (Index), right stick click, left A/X
 and left stick click can each be set to Hand Menu, Add Shapes, Tool Wheel, Quick Menu, Blender Menus,
-Show / Hide Desktop, Undo, Redo, Guide, Next Workflow, Play / Pause or Nothing. The labels
+Show / Hide Desktop, Undo, Redo, Undo Ring, Guide, Next Workflow, Play / Pause or Nothing. The labels
 and the Guide show your choices. The "while holding" and "in a menu" jobs stay fixed so
 they are always predictable; left B / Y always means back or cancel.
 
@@ -194,6 +194,46 @@ by type; links are lines between them. Point near a socket to see its name.
   Node removes it (never the Material Output).
 - Every change is one undo step. Put Away deletes only the garden's own objects.
 
+**Geometry Nodes (0.19):** Node Garden > Geometry Nodes of Selected (or Rewire in Node
+Garden on a Geometry Nodes block of the Modifier Tower) brings out the tree behind a
+Geometry Nodes modifier instead. Linking, moving and the values work the same way, and
+the object updates as soon as a link lands, because it is Blender's own tree. Add Node
+offers geometry nodes (Set Position, Transform Geometry, Subdivision Surface, Extrude
+Mesh, Join Geometry, Distribute Points, Instance on Points and more). Group Input and
+Group Output cannot be deleted.
+
+## Undo Ring (Quick menu > Undo Ring, or set a button to Undo Ring in Settings > Controls)
+
+Blender's real undo history rings the hand that holds your menus, one dot per step and
+named as in Edit > Undo History. The current step is the bright dot at the top; older
+steps run anticlockwise, undone ones clockwise and dimmer. A plate above names the
+current step and the ones either side.
+
+- **Right stick down:** one step back. **Up:** one step forward. Each notch is a real
+  jump through Blender's history, so the scene changes as you scrub. You feel a tick per
+  step and a buzz at either end.
+- **Any button, or B (Y):** close the ring where you are. A new edit from there drops the
+  undone steps, as in Blender.
+
+## Modifier Tower (Modifiers menu, Studio, Quick menu in Model)
+
+The active object's real modifier stack stands to your right as blocks, the first
+modifier at the bottom (the order Blender evaluates them). Each block shows its
+modifier's name and main value; a hidden modifier's block is dark.
+
+- **Reorder:** grip a block and drop it higher or lower; the modifier moves to that
+  place in the stack and the tower snaps tidy.
+- **Show / hide:** trigger a block, with any tool.
+- **Dial:** point at a block and push the right stick up or down to turn its main value
+  (Subdivision levels, Bevel width, Array count, Solidify thickness, Decimate ratio...).
+  You feel a detent per notch and a buzz at a limit.
+- **Menu:** Add Modifier › puts a new one on top; each block's row has show/hide, apply
+  and remove, its main value, and for Geometry Nodes, Rewire in Node Garden. Show
+  <name> switches the tower to the object you selected since.
+- Every change is one undo step. Reordering by grip records two: the block move itself
+  and the stack change (undo twice to take a reorder back). Put Away deletes only the
+  tower's own objects.
+
 ## UV by parts (Shade wheel, Quick menu > UV ›)
 
 - **UV Island:** trigger on a face. The island floods over neighbouring faces while
@@ -308,6 +348,16 @@ These checks ran on stock Blender 5.1.2 with synthetic poses.
   every wedge's tool / operator / setting, and picking a toggle were checked too.
   Duplicate, Bring Here and Delete are one undo each, and Delete is refused with
   nothing selected.
+- **Real Blender smoke (0.19):** the Undo Ring read the real undo stack by name,
+  scrubbed back two steps (the object moved back each time) and forward again, and
+  refused to go past the newest step. The Modifier Tower built one block per modifier,
+  bottom first; a ray found the block it pointed at; the dial raised Subdivision levels
+  and lowered Bevel width; a switch hid Bevel and one undo showed it again; a Bevel
+  block dropped above Subdivision reordered the real stack, and undoing it rebuilt the
+  tower without replaying the move; with a block active, Add Modifier went to the
+  tower's object, not the block; Put Away left the scene as before. A Geometry Nodes
+  garden linked Group Input → Transform Geometry → Group Output by socket drags and the
+  evaluated cube rose by the transform's 3 m; one undo took the link back.
 - **Render:** the Quick menu and the Sculpt page were rendered at 150% UI scale.
 
 - **0.9.0 checks:**

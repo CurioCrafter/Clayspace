@@ -237,6 +237,7 @@ SLOT_ACTIONS = (("HAND_MENU", "Hand Menu", "Open or close the hand menu"),
                 ("DESKTOP", "Show / Hide Desktop", "The Blender desktop panels"),
                 ("UNDO", "Undo", "One step back"),
                 ("REDO", "Redo", "One step forward"),
+                ("UNDO_RING", "Undo Ring", "Blender's undo history around your wrist: the stick scrubs it"),
                 ("GUIDE", "Guide", "The walkthrough"),
                 ("NEXT_WORKFLOW", "Next Workflow", "Model, Sculpt, Shade, Animate in turn"),
                 ("PLAY", "Play / Pause", "Animation playback"),
@@ -361,9 +362,11 @@ def build_actionmap(session_state, profile="INDEX", scheme=None):
         # Fly: the stick moves you where you look, up and down included.
         properties = {"mode": mode, "lock_location_z": not bool(scheme["fly"])}
         if name.startswith("move_"):
-            properties["fly_speed_factor"] = 0.1
+            fly_properties = bpy.ops.wm.xr_navigation_fly.get_rna_type().properties
+            if "fly_speed_factor" in fly_properties:  # Blender 5.0+
+                properties["fly_speed_factor"] = 0.1
             # Preserve compatibility with the frozen camera build.
-            if "hold_acceleration_seconds" in bpy.ops.wm.xr_navigation_fly.get_rna_type().properties:
+            if "hold_acceleration_seconds" in fly_properties:
                 properties.update(hold_acceleration_seconds=1.5, hold_start_factor=0.2,
                                   hold_acceleration_threshold=0.75)
         _operator_action(
@@ -948,6 +951,20 @@ def _begin_node_link(context, event):
     return True, "Dragging a link: release on a socket"
 
 
+def _tower_switch(context, event):
+    """Any tool: a trigger on a modifier tower block shows or hides that modifier; None elsewhere."""
+    from . import editing, modifier_tower
+    ray = _ray_from_event(event)
+    block = modifier_tower.block_at(context, *ray) if ray is not None else None
+    if block is None:
+        return None
+    _release_required.add(_event_key(event))  # Done on press: drain this trigger until it is let go.
+    try:
+        return True, modifier_tower.switch(context, block[modifier_tower.BLOCK_KEY])
+    except (editing.EditRejected, RuntimeError, ReferenceError, ValueError) as exc:
+        return False, str(exc)
+
+
 def _begin_scene_tool(context, event):
     """UI has first refusal; the same trigger then operates the chosen scene tool."""
     from . import hands
@@ -958,6 +975,9 @@ def _begin_scene_tool(context, event):
     linked, message = _begin_node_link(context, event)
     if linked is not None:
         return linked, message
+    switched = _tower_switch(context, event)
+    if switched is not None:
+        return switched
     if context.mode == "EDIT_MESH":
         return _begin_component(context, event, tool)
     if tool in {"extrude", "extrude_free", "inset", "face_scale", "select_edge", "bevel_edge",
@@ -2318,6 +2338,10 @@ class XRWB_OT_controller_cancel(_PulseOnPress, bpy.types.Operator):
         if tool_wheel.is_open():
             tool_wheel.close()
             return {"FINISHED"}
+        from . import undo_ring
+        if undo_ring.is_open():
+            interaction_log.emit("undo", undo_ring.close(), context)
+            return {"FINISHED"}
         menu_active = hand_menu_active(context)
         if _active_gesture is not None:
             _cancel_active(context, "XR Workbench gesture cancelled")
@@ -2494,6 +2518,12 @@ def run_slot_action(context, action: str, hand: str) -> tuple[bool, str]:
         operator = getattr(bpy.ops.xrwb, f"history_{action.lower()}")
         ok = operator.poll() and "FINISHED" in operator("EXEC_DEFAULT")
         return ok, action.title() if ok else f"Nothing to {action.lower()}"
+    if action == "UNDO_RING":
+        from . import undo_ring
+        if hand_menu_active(context):
+            _menu_stack.clear()
+            _native_call("xr_hand_menu", visible=False)
+        return undo_ring.open_ring(context, menu_hand_for(hand))
     if action == "GUIDE":
         return "FINISHED" in bpy.ops.xrwb.guide(action="OPEN"), "Guide"
     if action == "NEXT_WORKFLOW":
@@ -2530,7 +2560,10 @@ class XRWB_OT_controller_button(bpy.types.Operator):
         wheel = slot_action(self.slot) == "TOOL_WHEEL" and _active_gesture is None
         menu_press = (self.slot == _menu_press_slot() and hand_menu_active(context)
                       and _active_gesture is None and not tool_wheel.is_open())
-        if menu_press:
+        from . import undo_ring
+        if undo_ring.is_open():
+            ok, message = True, undo_ring.close()  # Any button leaves history where you scrubbed it.
+        elif menu_press:
             # An open menu always owns the stick click: press what is highlighted.
             ok, message = press_highlighted(context), "Pressed"
         elif wheel or (tool_wheel.is_open() and _active_gesture is None):
@@ -2586,13 +2619,31 @@ class XRWB_OT_controller_scroll(bpy.types.Operator):
     )
 
     def invoke(self, context, event):
+        from . import editing, modifier_tower, undo_ring
         direction = 1 if self.direction == "WHEELUPMOUSE" else -1
         if _active_gesture is not None:
             ok, message = reel_active(context, direction)
             return {"FINISHED"} if ok else {"CANCELLED"}
+        if undo_ring.is_open():
+            # Down steps back through Blender's history, up steps forward.
+            ok, message = undo_ring.step(context, direction)
+            pulse(context, _event_hand(event), "tick" if ok else "reject")
+            interaction_log.emit("undo", message, context, hand=_event_hand(event), level="INFO" if ok else "WARNING")
+            return {"FINISHED"} if ok else {"CANCELLED"}
         ray = _ray_from_event(event)
         if ray is None:
             return {"CANCELLED"}
+        block = modifier_tower.block_at(context, *ray) if not hand_menu_active(context) else None
+        if block is not None:
+            # Pointing at a tower block, the stick is that modifier's dial.
+            try:
+                ok, message = True, modifier_tower.dial(context, block[modifier_tower.BLOCK_KEY], direction)
+            except (editing.EditRejected, RuntimeError, ReferenceError, ValueError) as exc:
+                ok, message = False, str(exc)
+            pulse(context, _event_hand(event), "detent" if ok else "reject")
+            interaction_log.emit("modifiers", message, context, hand=_event_hand(event),
+                                 level="INFO" if ok else "WARNING")
+            return {"FINISHED"} if ok else {"CANCELLED"}
         if hand_menu_active(context):
             ok = stick_navigate(context, self.direction, ray)
             pulse(context, _event_hand(event), "tick" if ok else "reject")

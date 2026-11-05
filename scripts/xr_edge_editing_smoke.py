@@ -90,7 +90,7 @@ def draw_cache_contract():
 
 
 def main():
-    assert bpy.app.version[:3] == (5, 1, 2) and not bpy.data.filepath
+    assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0) and not bpy.data.filepath
     assert bpy.app.background, "Run in an owned factory background process"
     bpy.context.preferences.edit.use_global_undo = True
     bpy.context.preferences.edit.undo_steps = 32

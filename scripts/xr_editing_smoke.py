@@ -907,8 +907,8 @@ def _staged_tick():
 
 def start_staged_smoke() -> None:
     require(
-        bpy.app.version == (5, 1, 2),
-        f"expected Blender 5.1.2, got {bpy.app.version_string}",
+        (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0),
+        f"expected Blender 4.5 to 5.2, got {bpy.app.version_string}",
     )
     bpy.context.preferences.edit.use_global_undo = True
     for cls in editing.CLASSES:
@@ -919,8 +919,8 @@ def start_staged_smoke() -> None:
 
 def main() -> None:
     require(
-        bpy.app.version == (5, 1, 2),
-        f"expected Blender 5.1.2, got {bpy.app.version_string}",
+        (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0),
+        f"expected Blender 4.5 to 5.2, got {bpy.app.version_string}",
     )
     bpy.context.preferences.edit.use_global_undo = True
     registered = []

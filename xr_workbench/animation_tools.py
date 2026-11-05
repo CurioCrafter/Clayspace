@@ -27,7 +27,7 @@ def _fcurves(obj):
     data = obj.animation_data
     if data is None or data.action is None:
         return ()
-    bag = anim_utils.animdata_get_channelbag_for_assigned_slot(data)
+    bag = anim_utils.action_get_channelbag_for_slot(data.action, data.action_slot)  # Also in 4.5.
     return tuple(bag.fcurves) if bag is not None else ()
 
 

@@ -22,7 +22,7 @@ output.mkdir(parents=True, exist_ok=True)
 addon = addon_utils.enable("xr_workbench", default_set=False, persistent=True)
 assert addon is not None
 assert expected in Path(addon.__file__).resolve().parents
-assert bpy.app.version[:3] == (5, 1, 2)
+assert (4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0)
 bpy.context.preferences.view.show_splash = False
 # Keep a real fixture object for persistence checks, outside the panel's view.
 bpy.context.scene.objects["Cube"].location.x = -4.0

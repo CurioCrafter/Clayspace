@@ -61,7 +61,7 @@ def observation(
 
 
 def main() -> None:
-    require(bpy.app.version == (5, 1, 2), "smoke requires exact Blender 5.1.2")
+    require((4, 5, 0) <= bpy.app.version[:3] < (5, 3, 0), "smoke requires exact Blender 5.1.2")
 
     bpy.ops.mesh.primitive_cube_add(location=(0.0, 0.0, 2.0))
     front = bpy.context.object

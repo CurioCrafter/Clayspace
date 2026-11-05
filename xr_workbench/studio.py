@@ -108,8 +108,9 @@ def _geometry_group():
 
 
 def modifier_action(context, action, kind="", name=""):
+    from . import modifier_tower
     _guard(context)
-    obj = context.active_object
+    obj = modifier_tower.target_object(context)  # A tower block stands for its object.
     if obj is None or obj.type not in {"MESH", "CURVE", "FONT", "SURFACE"}:
         raise editing.EditRejected("Select a mesh or curve for modifiers")
     if obj.library or obj.override_library:
@@ -200,10 +201,12 @@ class XRWB_MT_modifiers(bpy.types.Menu):
     bl_label = "Modifiers"
 
     def draw(self, context):
+        from . import modifier_tower
         layout = self.layout
-        obj = context.active_object
+        obj = modifier_tower.target_object(context)
         layout.label(text=f"MODIFIERS: {obj.name}" if obj else "MODIFIERS", icon="MODIFIER")
         layout.operator("xrwb.open_hand_menu", text="Add Modifier  ›", icon="ADD").menu = "XRWB_MT_modifier_add"
+        layout.operator("xrwb.open_hand_menu", text="Modifier Tower  ›", icon="MOD_ARRAY").menu = "XRWB_MT_modifier_tower"
         if obj is None or not hasattr(obj, "modifiers"):
             layout.label(text="Select an object first.")
             return
@@ -745,7 +748,8 @@ class XRWB_MT_paint_draw(bpy.types.Menu):
 
 STUDIO_ENTRIES = (("XRWB_MT_prefabs", "Prefabs", "PACKAGE"), ("XRWB_MT_sdf", "SDF Blobs", "META_BALL"),
                   ("XRWB_MT_edit_mesh", "Edit V · E · F", "EDITMODE_HLT"),
-                  ("XRWB_MT_modifiers", "Modifiers", "MODIFIER"), ("XRWB_MT_lights", "Lights", "LIGHT"),
+                  ("XRWB_MT_modifiers", "Modifiers", "MODIFIER"), ("XRWB_MT_modifier_tower", "Modifier Tower", "MOD_ARRAY"),
+                  ("XRWB_MT_lights", "Lights", "LIGHT"),
                   ("XRWB_MT_camera_render", "Camera & Render", "CAMERA_DATA"), ("XRWB_MT_world", "World", "WORLD"),
                   ("XRWB_MT_physics", "Physics", "PHYSICS"), ("XRWB_MT_rig", "Rigging", "ARMATURE_DATA"),
                   ("XRWB_MT_paint_draw", "Paint & 3D Pen", "BRUSH_DATA"), ("XRWB_MT_outline", "Scene Outline", "OUTLINER"),
