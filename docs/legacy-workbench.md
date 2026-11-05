@@ -34,7 +34,7 @@ stops after five minutes, and saves no room images or hand traces. Each run
 writes text status under `reports/index-physical-launch` and `.xr_profile/logs`.
 The new [personal add-on and separated-panel workspace](personal-addons-vr-workspace.md)
 copies the 5.1 profile privately and exposes native editor/add-on controls.
-Use `Open Blender VR Addons Workspace.cmd` for camera-off desktop inspection.
+Use `Open VR Addons Workspace.cmd` for camera-off desktop inspection.
 Native panel availability does not yet mean every control has working camera-hand input.
 For a private desktop camera/hand-overlay experiment, use
 `Open Index Hand Preview.cmd`; it is not an in-headset Blender session.
@@ -45,7 +45,7 @@ Each run keeps text-only status and error output in
 `reports/index-headset-preview` for later diagnosis; no camera pictures or
 hand-joint traces are written by the launcher.
 
-Blender VR Workbench is an isolated SteamVR/OpenXR authoring layer for the
+The Clayspace Legacy Workbench is an isolated SteamVR/OpenXR authoring layer for the
 Blender 4.5.11 LTS build (set `CLAYSPACE_BLENDER_EXE` to your `blender.exe`). It adds controller-driven
 scene work directly in the headset. Blender editors and tools without a native
 adapter remain reachable as a 2D desktop through SteamVR Desktop View.

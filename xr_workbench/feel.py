@@ -402,6 +402,9 @@ def chips(at, normal, count, colour, units=1.0, now=None, tiny=False):
     count = int(min(count, MAX_PARTICLES))
     if count <= 0:
         return
+    if colour is None:  # contact_tools._chips has no object to hand; fall back to the theme grey.
+        from . import polish
+        colour = polish.MUTED
     n, u, v = _basis(normal)
     tilt = np.tan(np.radians(30.0)) * np.sqrt(_rng.random(count))
     spin = _rng.random(count) * 2 * math.pi

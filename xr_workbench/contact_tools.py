@@ -708,6 +708,7 @@ class DrillStroke(_ToolStroke):
         self.limit_m = float(np.linalg.norm(tuple(obj.dimensions))) / units
         self.radius = 0.25 * max(1.0e-6, float(settings.sculpt_radius_m)) * units
         self.spin = 0.0
+        self.pressure = 1.0  # controllers overwrite this from the trigger each sample.
         self.mark = _clock()
         self.cutter = self.modifier = self.cutter_mesh = None
 

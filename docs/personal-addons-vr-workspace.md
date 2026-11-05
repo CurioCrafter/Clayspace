@@ -16,7 +16,7 @@ External asset-library references remain references; their contents are not copi
 
 ## Launchers
 
-- `Open Blender VR Addons Workspace.cmd`: desktop inspection of the source-built
+- `Open VR Addons Workspace.cmd`: desktop inspection of the source-built
   5.1.2 workspace with personal add-ons; no automatic camera or XR session.
 - `Open Index Blender Addons Workspace.cmd`: opt-in, seated physical Index test;
   camera plus image-local Add Cube, personal add-ons and separated editor panels.

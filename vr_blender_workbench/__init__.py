@@ -1,4 +1,4 @@
-"""Blender VR Workbench entry point."""
+"""Clayspace Legacy Workbench entry point."""
 
 from __future__ import annotations
 
