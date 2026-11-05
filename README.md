@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/media/hero-vr-to-desktop.gif" alt="A Boolean cut made in VR, then the same mesh and its undo history in desktop Blender" width="100%">
+  <img src="docs/media/hero-vr-to-desktop.png" alt="A Boolean cut made in VR, then the same mesh and its undo history in desktop Blender" width="100%">
 </p>
 
 # VRBlender
@@ -25,7 +25,7 @@ VRBlender is free and open source (GPL). It is a patch to Blender plus an
 add-on, and it runs in its own profile, so your normal Blender settings and add-ons
 are left alone.
 
-> The animations on this page were recorded in a desktop OpenXR simulator with
+> The pictures on this page were captured in a desktop OpenXR simulator with
 > scripted input, so no hands or controllers are visible. See
 > [Hardware status](#hardware-status) for what has been checked on a real headset.
 
@@ -53,7 +53,7 @@ Windows may warn that the launcher comes from an unknown publisher; the files ar
 code-signed. The launcher is a short PowerShell script in the `launcher` folder, and
 you are welcome to read it first. Logs go to `profile\logs`.
 
-Already build Blender yourself? `VRBlender-0.19.0-addon.zip` is the add-on alone
+Already built Blender yourself? `VRBlender-0.19.0-addon.zip` is the add-on alone
 (Edit > Preferences > Get Extensions > Install from Disk). It needs a Blender built
 with the VRBlender patch, see [Build from source](#build-from-source-windows), and it
 will tell you so if the patch is missing.
@@ -62,34 +62,39 @@ will tell you so if the patch is missing.
 
 <table>
 <tr>
-<td width="50%"><img src="docs/media/live-boolean.gif" alt="Live Boolean cutter cutting a hole through a box"><br>
+<td width="50%"><img src="docs/media/live-boolean.png" alt="Live Boolean cutter cutting a hole through a box"><br>
 <b>Live Booleans.</b> Draw a cutter and watch it cut, join or keep the overlap while you
 move it. It stays a real Boolean modifier until you apply it.</td>
-<td width="50%"><img src="docs/media/undo-ring.gif" alt="Undo Ring showing named undo steps around the hand"><br>
+<td width="50%"><img src="docs/media/undo-ring.png" alt="Undo Ring showing named undo steps around the hand"><br>
 <b>Undo Ring.</b> Blender's own undo history around your hand, every step by name.
 Scrub back and forward with the stick; each notch is a real undo or redo.</td>
 </tr>
 <tr>
-<td><img src="docs/media/modifier-tower.gif" alt="Modifier stack shown as stacked blocks"><br>
+<td><img src="docs/media/modifier-tower.png" alt="Modifier stack shown as stacked blocks"><br>
 <b>Modifier Tower.</b> The modifier stack as blocks you can hold. Move a block up or down
 to reorder, trigger it to switch it on or off, push the stick to dial its main value.</td>
-<td><img src="docs/media/node-garden-geometry-nodes.gif" alt="Geometry Nodes tree as blocks with links being made"><br>
+<td><img src="docs/media/node-garden-geometry-nodes.png" alt="Geometry Nodes tree as blocks with links being made"><br>
 <b>Node Garden.</b> A material or Geometry Nodes tree as blocks standing in front of you.
 Drag from socket to socket to link, and the object updates live. The node editor stays in step.</td>
 </tr>
 <tr>
-<td><img src="docs/media/sdf-blobs.gif" alt="Clay-like blobs melting together"><br>
+<td><img src="docs/media/sdf-blobs.png" alt="Clay-like blobs melting together"><br>
 <b>SDF blobs.</b> Draw trails of clay that melt together, carve them away smoothly, then
 bake the result to a mesh. The ring at the pen tip is exactly the size you get.</td>
-<td><img src="docs/media/uv-island-by-parts.gif" alt="A mug being unwrapped one part at a time"><br>
+<td><img src="docs/media/uv-island-by-parts.png" alt="A mug being unwrapped one part at a time"><br>
 <b>UVs by parts.</b> Point at a face and a UV island floods out to a crease angle you
 choose. Let go and just that part is unwrapped, with its border as seams.</td>
 </tr>
 <tr>
-<td><img src="docs/media/tool-wheel.gif" alt="Tool wheel opening around the hand"><br>
+<td><img src="docs/media/draw-shapes.png" alt="A box drawn by hand in the air"><br>
+<b>Draw shapes.</b> Draw boxes, spheres and cylinders by hand at the size you want, or
+place one with a ghost preview. Letting go commits it as one undo step.</td>
+<td><img src="docs/media/tool-wheel.png" alt="Tool wheel around the hand with Free Extrude highlighted"><br>
 <b>Tool wheel.</b> Click the right stick, move your hand a few centimetres toward a tool
 (you feel a tick for each one) and click again.</td>
-<td><img src="docs/media/themes-grid.png" alt="The five VR colour themes side by side"><br>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/media/themes-grid.png" alt="The five VR colour themes side by side"><br>
 <b>Five themes.</b> Default, Midnight, High Contrast, Ocean and Light, switched live from
 Settings &gt; Feel. Plate labels are chosen to stay readable over dark and bright scenes.</td>
 </tr>
